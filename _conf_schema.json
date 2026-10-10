@@ -1,0 +1,312 @@
+{
+  "providers": {
+    "description": "搜索服务",
+    "type": "object",
+    "items": {
+      "saucenao": {
+        "description": "SauceNAO",
+        "type": "object",
+        "items": {
+          "aliases": {
+            "type": "list",
+            "description": "渠道别名",
+            "hint": "每项一个别名，直接填写名称，无需等号。不可覆盖内置名称，别名不会启用渠道。",
+            "default": [
+              "s"
+            ]
+          },
+          "enabled": {
+            "type": "bool",
+            "description": "启用 SauceNAO",
+            "default": true
+          },
+          "api_key": {
+            "type": "string",
+            "description": "API Key",
+            "default": ""
+          },
+          "max_results": {
+            "type": "int",
+            "description": "最大结果数",
+            "default": 5
+          },
+          "min_similarity": {
+            "type": "int",
+            "description": "最低相似度百分比",
+            "default": 40,
+            "slider": {
+              "min": 0,
+              "max": 100,
+              "step": 1
+            }
+          },
+          "send_low_similarity": {
+            "type": "bool",
+            "description": "相似度过低时是否发送",
+            "hint": "低于最低相似度的候选仍可发送，并标注仅供参考；关闭时不发送该候选。不改变补搜判断。",
+            "default": false
+          },
+          "low_accuracy_threshold": {
+            "type": "int",
+            "description": "低可信补搜阈值百分比",
+            "hint": "首选结果低于此值时标记低可信，并按下方选项决定是否补搜。最低展示相似度另行控制候选是否发送。",
+            "default": 60,
+            "slider": {
+              "min": 0,
+              "max": 100,
+              "step": 1
+            }
+          },
+          "low_similarity_provider": {
+            "type": "string",
+            "description": "SauceNAO 相似度过低时自动使用",
+            "hint": "低于低可信阈值或最低展示阈值时，仅补搜所选已启用渠道；off 不补搜。显式指定渠道不追加其他渠道。无候选或接口失败仍按已有备用搜索策略处理。",
+            "options": [
+              "off",
+              "Ascii2d",
+              "google"
+            ],
+            "default": "off"
+          }
+        }
+      },
+      "google_lens": {
+        "description": "Google Lens",
+        "type": "object",
+        "items": {
+          "aliases": {
+            "type": "list",
+            "description": "渠道别名",
+            "hint": "每项一个别名，直接填写名称，无需等号。不可覆盖内置名称，别名不会启用渠道。",
+            "default": [
+              "g",
+              "谷歌"
+            ]
+          },
+          "enabled": {
+            "type": "bool",
+            "description": "启用 Google Lens",
+            "default": false
+          },
+          "serpapi_keys": {
+            "type": "list",
+            "description": "SerpAPI Keys",
+            "hint": "支持多个 Key 轮换和额度拒绝时切换。",
+            "default": []
+          },
+          "max_results": {
+            "type": "int",
+            "description": "最大结果数",
+            "default": 5
+          },
+          "search_type": {
+            "type": "string",
+            "description": "搜索类型",
+            "options": [
+              "all",
+              "visual_matches",
+              "exact_matches"
+            ],
+            "default": "all"
+          },
+          "language": {
+            "type": "string",
+            "description": "结果语言",
+            "default": "zh-cn"
+          },
+          "country": {
+            "type": "string",
+            "description": "国家或地区代码",
+            "default": ""
+          },
+          "safe_search": {
+            "type": "string",
+            "description": "安全搜索",
+            "hint": "default：使用服务端默认值（不发送 safe）；off：明确关闭（safe=off）；active：开启（safe=active）。",
+            "options": [
+              "default",
+              "off",
+              "active"
+            ],
+            "default": "off"
+          },
+          "auto_crop": {
+            "type": "bool",
+            "description": "自动裁剪识别区域",
+            "default": false
+          },
+          "no_cache": {
+            "type": "bool",
+            "description": "跳过 SerpAPI 缓存",
+            "default": false
+          }
+        }
+      },
+      "ascii2d": {
+        "description": "Ascii2d",
+        "type": "object",
+        "items": {
+          "aliases": {
+            "type": "list",
+            "description": "渠道别名",
+            "hint": "每项一个别名，直接填写名称，无需等号。不可覆盖内置名称，别名不会启用渠道。",
+            "default": [
+              "a"
+            ]
+          },
+          "enabled": {
+            "type": "bool",
+            "description": "启用 Ascii2d",
+            "default": true
+          },
+          "session_id": {
+            "type": "string",
+            "description": "_session_id Cookie",
+            "hint": "网站要求会话时填写。",
+            "default": ""
+          },
+          "cf_clearance": {
+            "type": "string",
+            "description": "cf_clearance Cookie",
+            "hint": "网站要求验证时填写；Cookie 不保证能解除访问限制。",
+            "default": ""
+          }
+        }
+      },
+      "trace_moe": {
+        "description": "trace.moe",
+        "type": "object",
+        "items": {
+          "enabled": {
+            "type": "bool",
+            "description": "启用 trace.moe 搜番",
+            "default": true
+          },
+          "token": {
+            "type": "string",
+            "description": "Token",
+            "hint": "可选，留空使用匿名额度。",
+            "default": ""
+          },
+          "max_results": {
+            "type": "int",
+            "description": "最大结果数",
+            "default": 3
+          },
+          "min_similarity": {
+            "type": "int",
+            "description": "最低相似度百分比",
+            "default": 85,
+            "slider": {
+              "min": 0,
+              "max": 100,
+              "step": 1
+            }
+          },
+          "cut_borders": {
+            "type": "bool",
+            "description": "自动裁剪黑边",
+            "default": true
+          }
+        }
+      }
+    }
+  },
+  "command": {
+    "description": "命令交互",
+    "type": "object",
+    "items": {
+      "simple_natural_language": {
+        "type": "bool",
+        "description": "简单自然语言直达搜图",
+        "hint": "在模型调用前接管整句明确请求，如“帮我找下出处”；“搜一下”需有图片。支持句尾渠道别名，遵守既有会话唤醒和群聊门控，不依赖 LLM 工具开关。",
+        "default": true
+      },
+      "image_wait_timeout_seconds": {
+        "type": "int",
+        "description": "无图命令等待秒数",
+        "hint": "单独发送搜图或搜番后，等待同一会话同一发送者发送图片。",
+        "default": 60,
+        "slider": {
+          "min": 10,
+          "max": 120,
+          "step": 5
+        }
+      }
+    }
+  },
+  "output": {
+    "description": "结果展示",
+    "type": "object",
+    "items": {
+      "merged_forward_threshold": {
+        "type": "int",
+        "description": "合并推送触发条数",
+        "hint": "按归并后的结果计数，不包含提示或错误：0 不合并；1 始终合并；2–10 超过设定条数才合并。仅支持原生合并转发的平台生效。",
+        "default": 2,
+        "slider": {
+          "min": 0,
+          "max": 10,
+          "step": 1
+        }
+      },
+      "resolve_original_source": {
+        "type": "bool",
+        "description": "补全转载页的原始出处",
+        "hint": "仅解析 Danbooru、Gelbooru、Konachan、Yande.re 作品页明确的来源字段；额外等待最多 6 秒，失败保留转载页，不覆盖已有来源。",
+        "default": true
+      },
+      "show_thumbnails": {
+        "type": "bool",
+        "description": "显示结果缩略图",
+        "hint": "仅下载搜索服务提供的缩略图；加载失败保留文字。不下载来源原图。",
+        "default": true
+      },
+      "max_preview_images": {
+        "type": "int",
+        "description": "每次搜索最多展示图片数",
+        "hint": "限制图片下载与消息体积，不影响文字结果数量。",
+        "default": 6,
+        "slider": {
+          "min": 1,
+          "max": 20,
+          "step": 1
+        }
+      }
+    }
+  },
+  "llm": {
+    "description": "LLM 工具",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用llm搜图工具调用",
+        "hint": "仅供明确的搜图或搜番请求调用；命令功能不受此开关影响。",
+        "default": true
+      }
+    }
+  },
+  "network": {
+    "description": "网络",
+    "type": "object",
+    "items": {
+      "proxy_url": {
+        "type": "string",
+        "description": "HTTP 代理",
+        "hint": "例如 http://127.0.0.1:7890；留空表示直连。",
+        "default": ""
+      },
+      "user_agent": {
+        "type": "string",
+        "description": "User-Agent",
+        "default": "AstrBot Image Search/0.1"
+      },
+      "timeout_seconds": {
+        "type": "int",
+        "description": "请求超时秒数",
+        "default": 30
+      }
+    }
+  }
+}
