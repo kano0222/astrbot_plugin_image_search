@@ -43,3 +43,28 @@ def parse_simple_request(
             return None
         return SimpleSearchRequest(channels=channels, requires_image=requires_image)
     return None
+
+
+def parse_tool_channels(text: str, aliases: dict[str, str]) -> str | None:
+    """Bind exact channels in a whole search request without changing direct routing."""
+    request = parse_simple_request(text, aliases)
+    if request is not None and request.channels:
+        return request.channels
+    if not isinstance(text, str) or len(text) > 200:
+        return None
+    text = text.strip().rstrip(_END).strip()
+    if "\n" in text or "\r" in text:
+        return None
+    match = re.fullmatch(
+        _PREFIX + "(?:" + _EXPLICIT + "|" + _CONTEXTUAL
+        + r"|搜索一下|搜索下)\s*(.+)", text,
+    )
+    if match is None:
+        return None
+    names = set(aliases) | {"google_lens", "saucenao", "ascii2d"}
+    token = "(?:" + "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True)) + r"|[0-9]+)"
+    tail = match.group(1)
+    if re.fullmatch(token + r"(?:(?:[\s,，、]+|\s*和\s*)" + token + ")*", tail,
+                    re.IGNORECASE) is None:
+        return None
+    return " ".join(re.findall(token, tail, re.IGNORECASE))

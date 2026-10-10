@@ -33,10 +33,10 @@ from .core.providers import (
 )
 from .image_input import find_public_image_url, find_raw_image_url, first_public_url
 from .command_aliases import build_channel_aliases
-from .simple_requests import parse_simple_request
-from .presentation import format_search_response, provider_label
+from .simple_requests import parse_simple_request, parse_tool_channels
+from .presentation import count_search_results, format_search_response, provider_label
 from .result_delivery import ResultDelivery
-from .tool_contract import available_modes, tool_description
+from .tool_contract import available_modes, completion_instruction, tool_description
 from .runtime.http_client import AioHttpJsonClient
 from .runtime.curl_client import CurlCffiWebClient
 from .runtime.source_pages import SourcePageClient
@@ -116,11 +116,7 @@ class ImageSearchPlugin(Star):
                     self._http,
                     api_key=sauce_key,
                     max_results=_positive_int(sauce.get("max_results"), 5),
-                    min_similarity=_percentage_value(sauce.get("min_similarity"), 40),
-                    send_low_similarity=_as_bool(sauce.get("send_low_similarity"), False),
-                    low_accuracy_threshold=_percentage_value(
-                        sauce.get("low_accuracy_threshold"), 60
-                    ),
+                    min_similarity=_percentage_value(sauce.get("min_similarity"), 60),
                     timeout_seconds=self._timeout_seconds,
                 )
             )
@@ -223,8 +219,22 @@ class ImageSearchPlugin(Star):
         self, event: AstrMessageEvent, channels: str,
         *, image_resolution: tuple[str | None, str | None] | None = None,
     ):
+        provider_names, notice = self._resolve_source_channels(channels)
+        if notice:
+            yield event.plain_result(notice)
+        if provider_names == []:
+            return
+        async for result in self._run_search(
+            event, SearchMode.AUTO, provider_names=provider_names,
+            image_resolution=image_resolution,
+        ):
+            yield result
+
+    def _resolve_source_channels(self, channels: str) -> tuple[list[str] | None, str | None]:
+        """Share exact channel selection and diagnostics across commands and tools."""
         aliases = self._channel_aliases
         provider_names = None
+        notice = None
         if channels.strip():
             provider_names = list(
                 dict.fromkeys(
@@ -241,7 +251,7 @@ class ImageSearchPlugin(Star):
                 provider_names = [
                     name for name in provider_names if name not in unavailable
                 ]
-                yield event.plain_result(
+                notice = (
                     "搜索渠道不可用，已忽略："
                     + "、".join(provider_label(name) for name in unavailable)
                     + "\n当前启用渠道："
@@ -252,13 +262,7 @@ class ImageSearchPlugin(Star):
                         else ""
                     )
                 )
-            if not provider_names:
-                return
-        async for result in self._run_search(
-            event, SearchMode.AUTO, provider_names=provider_names,
-            image_resolution=image_resolution,
-        ):
-            yield result
+        return provider_names, notice
 
     @filter.command("搜番")
     async def search_anime_command(self, event: AstrMessageEvent):
@@ -301,7 +305,6 @@ class ImageSearchPlugin(Star):
         event: AstrMessageEvent,
         req: ProviderRequest,
     ) -> None:
-        del event
         if req.func_tool is None:
             return
         tool = req.func_tool.get_tool("search_image")
@@ -331,14 +334,53 @@ class ImageSearchPlugin(Star):
                 "description": "Search intent. Allowed: " + ", ".join(modes),
             }
         )
+        if source_names:
+            aliases = [
+                f"{name}={target}" for name, target in self._channel_aliases.items()
+                if target in source_names
+            ]
+            tool.parameters["properties"]["channels"] = {
+                "type": "string", "default": "",
+                "description": (
+                    "Use the source channels explicitly requested by the user; "
+                    "separate multiple names with spaces or commas. Enabled: "
+                    + ", ".join(source_names) + ". Aliases: " + ", ".join(aliases)
+                    + ". Pass an empty string only when the user did not select channels. "
+                    "Explicit channels never add fallback or anime search. "
+                    "Only valid for auto/source, not anime."
+                ),
+            }
+            requested = self._requested_source_channels(event)
+            if requested:
+                tool.parameters["properties"]["channels"]["enum"] = [requested]
+                tool.parameters["properties"]["channels"]["default"] = requested
+            required = list(tool.parameters.get("required", []))
+            if "channels" not in required:
+                required.append("channels")
+            tool.parameters["required"] = required
+        else:
+            tool.parameters["properties"].pop("channels", None)
+            if "required" in tool.parameters:
+                tool.parameters["required"] = [
+                    name for name in tool.parameters["required"] if name != "channels"
+                ]
         req.func_tool.add_tool(tool)
+
+    def _requested_source_channels(self, event) -> str | None:
+        get_messages = getattr(event, "get_messages", None)
+        if not callable(get_messages):
+            return None
+        text = "".join(component.text for component in get_messages()
+                       if isinstance(component, Plain))
+        return parse_tool_channels(text, self._channel_aliases)
 
     @llm_tool("search_image")
     async def tool_search_image(
         self,
         event: AstrMessageEvent,
         mode: str = "",
-    ) -> str | None:
+        channels: str = "",
+    ) -> str:
         """Search an attached or replied image after an explicit user request
 
         Call this tool only when the user explicitly asks to find an image source,
@@ -348,6 +390,9 @@ class ImageSearchPlugin(Star):
         Args:
             mode(string): Search intent from the request-specific allowed modes.
                 Omit to use auto when source services are enabled, otherwise anime.
+            channels(string): Source channels explicitly requested by the user,
+                separated by spaces or commas. Use an empty string for the default search plan.
+                Only valid for auto/source. Explicit channels never add others.
         """
         modes = available_modes(
             self._service.source_provider_names, self._service.anime_provider_names
@@ -364,6 +409,22 @@ class ImageSearchPlugin(Star):
                 ensure_ascii=False,
             )
         search_mode = SearchMode(selected_mode)
+        if not isinstance(channels, str):
+            return json.dumps({"success": False, "error": "channels 必须是渠道名称字符串"},
+                              ensure_ascii=False)
+        requested = self._requested_source_channels(event)
+        if requested:
+            channels = requested
+        if channels.strip() and search_mode is SearchMode.ANIME:
+            return json.dumps({"success": False, "error": "搜番模式不能指定来源搜索渠道"},
+                              ensure_ascii=False)
+        provider_names, notice = self._resolve_source_channels(channels)
+        if provider_names == []:
+            return json.dumps({"success": False, "error": notice,
+                               "instruction": "转告渠道不可用的说明，不要改用其他渠道搜索。"},
+                              ensure_ascii=False)
+        if notice:
+            await event.send(event.plain_result(notice))
         image_url, image_error = await self._get_image_url(event)
         if image_url is None:
             return json.dumps(
@@ -375,13 +436,24 @@ class ImageSearchPlugin(Star):
             )
 
         request_id, response = await self._search_with_logging(
-            ImageAsset(url=image_url), search_mode,
+            ImageAsset(url=image_url), search_mode, provider_names=provider_names,
         )
         self._log_search_failures(response)
         if not await self._send_rich_result(event, response, request_id):
             await event.send(event.plain_result(format_search_response(response)))
             logger.info(f"[ImageSearch] id={request_id} 普通文字结果已发送")
-        return None
+        result_count = count_search_results(response)
+        return json.dumps(
+            {
+                "success": result_count > 0,
+                "count": result_count,
+                "message_sent": True,
+                "attempted_providers": response.attempted_providers,
+                "result_providers": list(dict.fromkeys(match.provider for match in response.matches)),
+                "instruction": completion_instruction(result_count),
+            },
+            ensure_ascii=False,
+        )
 
     async def _run_search(
         self,

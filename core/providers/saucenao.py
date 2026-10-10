@@ -26,9 +26,7 @@ class SauceNaoProvider:
         *,
         api_key: str,
         max_results: int = 5,
-        min_similarity: float = 40,
-        send_low_similarity: bool = False,
-        low_accuracy_threshold: float = 60,
+        min_similarity: float = 60,
         timeout_seconds: float = 30,
     ) -> None:
         normalized_key = api_key.strip()
@@ -38,8 +36,6 @@ class SauceNaoProvider:
             raise ValueError("max_results must be greater than zero")
         if not 0 <= min_similarity <= 100:
             raise ValueError("min_similarity must be between zero and 100")
-        if not 0 <= low_accuracy_threshold <= 100:
-            raise ValueError("low_accuracy_threshold must be between zero and 100")
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
 
@@ -47,8 +43,6 @@ class SauceNaoProvider:
         self._api_key = normalized_key
         self._max_results = max_results
         self._min_similarity = min_similarity
-        self._send_low_similarity = send_low_similarity
-        self._low_accuracy_threshold = low_accuracy_threshold
         self._timeout_seconds = timeout_seconds
 
     async def search(
@@ -141,25 +135,10 @@ class SauceNaoProvider:
 
         match, index_id = selected
         if match.similarity < self._min_similarity:
-            return ProviderOutcome(
-                matches=[match] if self._send_low_similarity else [],
-                notices=[
-                    f"SauceNAO 相似度低于最低展示阈值 {self._min_similarity:g}%，结果仅供参考。"
-                    if self._send_low_similarity else
-                    "SauceNAO 找到了候选结果，但相似度低于设定阈值。"
-                ],
-                low_accuracy=True,
-            )
-        low_accuracy = match.similarity < self._low_accuracy_threshold
+            return ProviderOutcome(low_accuracy=True, filtered_below=self._min_similarity)
         return ProviderOutcome(
             matches=[match],
-            notices=[
-                f"SauceNAO 相似度低于 {self._low_accuracy_threshold:g}%，结果仅供参考。"
-            ]
-            if low_accuracy
-            else [],
-            suggests_anime=not low_accuracy and index_id in self._ANIME_DATABASE_IDS,
-            low_accuracy=low_accuracy,
+            suggests_anime=index_id in self._ANIME_DATABASE_IDS,
         )
 
     def _parse_match(self, item: object) -> tuple[SourceMatch, int | None] | None:

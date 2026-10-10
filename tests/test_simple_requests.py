@@ -1,7 +1,7 @@
 import unittest
 
 from command_aliases import build_channel_aliases
-from simple_requests import parse_simple_request
+from simple_requests import parse_simple_request, parse_tool_channels
 
 
 class SimpleRequestTests(unittest.TestCase):
@@ -56,3 +56,27 @@ class SimpleRequestTests(unittest.TestCase):
 
     def test_size_bound(self):
         self.assertIsNone(self.parse("搜图 " + "1 " * 200))
+
+    def test_tool_exact_attached_channels_and_conjunction(self):
+        for text, expected in (
+            ("搜一下谷歌", "谷歌"),
+            ("搜一下谷歌和SauceNAO", "谷歌 SauceNAO"),
+            ("搜索一下google", "google"),
+            ("请帮我搜下酱和g", "酱 g"),
+            ("搜一下 谷歌 和 SauceNAO", "谷歌 SauceNAO"),
+            ("找出处 g s 123", "g s 123"),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(parse_tool_channels(text, self.aliases), expected)
+
+    def test_tool_does_not_infer_channels_from_mentions_or_mixed_intents(self):
+        for text in ("不要搜一下谷歌", "搜一下谷歌并分析画风", "谷歌不是来源",
+                     '“搜一下谷歌”', "搜一下谷歌谢谢喵", "搜一下gogle", "找出处",
+                     "搜一下谷歌\n顺便分析", "搜图 " + "1 " * 200):
+            with self.subTest(text=text):
+                self.assertIsNone(parse_tool_channels(text, self.aliases))
+
+    def test_tool_binding_does_not_expand_direct_route(self):
+        self.assertIsNone(self.parse("搜一下谷歌"))
+        self.assertIsNone(self.parse("搜一下谷歌和SauceNAO"))
+        self.assertEqual(self.parse("搜一下 g s").channels, "g s")

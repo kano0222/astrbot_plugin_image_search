@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -296,7 +297,7 @@ class PluginDeliveryTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.plugin.terminate()
 
-    async def test_command_and_tool_share_rich_delivery_without_extra_reply(self):
+    async def test_command_and_tool_share_rich_delivery_with_tool_feedback(self):
         target = event()
         outputs = [item async for item in self.plugin.search_image_command(target, "g s")]
         self.assertEqual(outputs, [])
@@ -304,7 +305,10 @@ class PluginDeliveryTests(unittest.IsolatedAsyncioTestCase):
                          ["google_lens", "saucenao"])
         command = await target.send.await_args.args[0].chain[0].to_dict()
         result = await self.plugin.tool_search_image(target)
-        self.assertIsNone(result)
+        feedback = json.loads(result)
+        self.assertTrue(feedback["message_sent"])
+        self.assertEqual(feedback["count"], 2)
+        self.assertIn("当前会话的人格语气", feedback["instruction"])
         tool = await target.send.await_args.args[0].chain[0].to_dict()
         self.assertEqual(command, tool)
         self.assertEqual(target.send.await_count, 2)
@@ -317,7 +321,9 @@ class PluginDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tool_forward_failure_sends_plain_result_once(self):
         target = event(send=AsyncMock(side_effect=[RuntimeError(), RuntimeError(), None]))
-        self.assertIsNone(await self.plugin.tool_search_image(target))
+        feedback = json.loads(await self.plugin.tool_search_image(target))
+        self.assertTrue(feedback["message_sent"])
+        self.assertEqual(feedback["count"], 2)
         self.assertEqual(target.send.await_count, 3)
         last = target.send.await_args.args[0].chain
         self.assertEqual(len(last), 1)

@@ -57,9 +57,10 @@ class CqpsSelectionTests(unittest.IsolatedAsyncioTestCase):
         outcome = await self.search([result(55, 21)])
         self.assertTrue(outcome.low_accuracy)
         self.assertFalse(outcome.suggests_anime)
-        self.assertEqual(len(outcome.matches), 1)
+        self.assertEqual(outcome.matches, [])
+        self.assertEqual(outcome.notices, [])
 
-    async def test_custom_threshold_controls_notice_and_anime_signal(self):
+    async def test_custom_threshold_controls_filter_and_anime_signal(self):
         provider = SauceNaoProvider(
             FakeHttpClient(
                 JsonResponse(
@@ -67,12 +68,13 @@ class CqpsSelectionTests(unittest.IsolatedAsyncioTestCase):
                 )
             ),
             api_key="test",
-            low_accuracy_threshold=80,
+            min_similarity=80,
         )
         outcome = await provider.search(IMAGE, SearchMode.AUTO)
         self.assertTrue(outcome.low_accuracy)
         self.assertFalse(outcome.suggests_anime)
-        self.assertIn("80%", outcome.notices[0])
+        self.assertEqual(outcome.matches, [])
+        self.assertEqual(outcome.notices, [])
 
     async def test_threshold_boundary_is_reliable(self):
         outcome = await self.search([result(60, 21)])
@@ -140,13 +142,12 @@ class CqpsPlanTests(unittest.IsolatedAsyncioTestCase):
     async def test_weak_sauce_supplements_ascii_without_lens(self):
         response = await self.run_plan(
             ProviderOutcome(
-                matches=[SourceMatch(provider="saucenao", title="weak")],
                 low_accuracy=True,
             ),
             ProviderOutcome(matches=[SourceMatch(provider="ascii2d", title="ascii")]),
         )
         self.assertEqual(response.attempted_providers, ["saucenao", "ascii2d"])
-        self.assertEqual([m.title for m in response.matches], ["weak", "ascii"])
+        self.assertEqual([m.title for m in response.matches], ["ascii"])
 
     async def test_failure_and_empty_results_fall_back_to_lens(self):
         response = await self.run_plan(sauce_error=RuntimeError("quota"))

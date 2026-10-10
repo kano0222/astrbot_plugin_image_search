@@ -72,6 +72,7 @@ class ProviderOutcome:
     notices: list[str] = field(default_factory=list)
     suggests_anime: bool = False
     low_accuracy: bool = False
+    filtered_below: float | None = None
 
 
 @dataclass(slots=True)
@@ -83,3 +84,4 @@ class SearchResponse:
     failed_providers: list[str] = field(default_factory=list)
     failure_details: dict[str, str] = field(default_factory=dict)
     notices: list[str] = field(default_factory=list)
+    filtered_providers: dict[str, float] = field(default_factory=dict)

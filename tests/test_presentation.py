@@ -7,6 +7,41 @@ from presentation import format_search_response
 
 
 class PresentationTests(unittest.TestCase):
+    def test_empty_results_distinguish_filtered_candidates_and_no_match(self):
+        text = format_search_response(SearchResponse(
+            attempted_providers=["saucenao", "google_lens"],
+            filtered_providers={"saucenao": 60},
+        ))
+        self.assertEqual(text, "SauceNAO 候选相似度低于 60%，未展示。\n\nGoogle Lens 未找到匹配结果。")
+        self.assertNotIn("更清晰", text)
+        self.assertNotIn("仅供参考", text)
+
+    def test_successful_followup_does_not_add_filtered_candidate_notice(self):
+        text = format_search_response(SearchResponse(
+            matches=[SourceMatch(provider="google_lens", title="Artwork", url="https://site.test/art")],
+            attempted_providers=["saucenao", "google_lens"],
+            filtered_providers={"saucenao": 60},
+        ))
+        self.assertIn("Artwork", text)
+        self.assertNotIn("SauceNAO", text)
+        self.assertNotIn("未展示", text)
+
+    def test_filtered_candidate_and_service_failure_are_separate(self):
+        text = format_search_response(SearchResponse(
+            attempted_providers=["saucenao", "google_lens"],
+            filtered_providers={"saucenao": 75},
+            failed_providers=["google_lens"],
+            failure_details={"google_lens": "搜索请求超时"},
+        ))
+        self.assertIn("低于 75%，未展示", text)
+        self.assertIn("Google Lens：搜索请求超时", text)
+        self.assertNotIn("Google Lens 未找到匹配结果", text)
+
+    def test_empty_candidates_are_not_reported_as_low_similarity(self):
+        self.assertEqual(format_search_response(SearchResponse(
+            attempted_providers=["saucenao"],
+        )), "SauceNAO 未找到匹配结果。")
+
     def test_groups_source_and_anime_results(self) -> None:
         response = SearchResponse(
             matches=[

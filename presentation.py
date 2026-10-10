@@ -40,7 +40,15 @@ def format_search_response(response: SearchResponse) -> str:
         elif len(response.failed_providers) == len(response.attempted_providers):
             sections.append("搜索服务暂时不可用，请稍后重试。")
         else:
-            sections.append("未找到可靠结果，请尝试更换更清晰、裁剪更准确的图片。")
+            for name in response.attempted_providers:
+                if name in response.failed_providers:
+                    continue
+                threshold = response.filtered_providers.get(name)
+                sections.append(
+                    f"{provider_label(name)} 候选相似度低于 {threshold:g}%，未展示。"
+                    if threshold is not None else
+                    f"{provider_label(name)} 未找到匹配结果。"
+                )
 
     sections.extend(_response_notes(response))
     return "\n\n".join(sections)

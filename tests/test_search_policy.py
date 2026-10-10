@@ -77,22 +77,51 @@ class SearchPolicyTests(unittest.IsolatedAsyncioTestCase):
             result = await SearchService(source_providers=[sauce, lens]).search(IMAGE, SearchMode.AUTO)
             self.assertEqual(result.attempted_providers, ["saucenao", "google_lens"])
 
-    async def test_display_below_minimum_is_opt_in_and_remains_low_accuracy(self):
-        for send in (False, True):
-            http = AsyncMock()
-            http.get_json.return_value = JsonResponse(200, {
-                "header": {"status": 0}, "results": [{
-                    "header": {"similarity": "20", "index_id": 21},
-                    "data": {"title": "Candidate", "ext_urls": ["https://example.org/art"]},
-                }],
-            })
-            result = await SauceNaoProvider(http, api_key="test",
-                send_low_similarity=send).search(IMAGE, SearchMode.AUTO)
-            self.assertEqual(len(result.matches), int(send))
-            self.assertTrue(result.low_accuracy)
-            self.assertFalse(result.suggests_anime)
-            if send:
-                self.assertIn("仅供参考", result.notices[0])
+    async def test_unified_threshold_filters_candidates_without_notice_or_anime(self):
+        for threshold in (60, 80):
+            for score in (20, threshold - 0.01, threshold, threshold + 0.01):
+                with self.subTest(threshold=threshold, score=score):
+                    http = self.sauce_http(score)
+                    outcome = await SauceNaoProvider(
+                        http, api_key="test", min_similarity=threshold,
+                    ).search(IMAGE, SearchMode.AUTO)
+                    accepted = score >= threshold
+                    self.assertEqual(len(outcome.matches), int(accepted))
+                    self.assertEqual(outcome.low_accuracy, not accepted)
+                    self.assertEqual(outcome.suggests_anime, accepted)
+                    self.assertEqual(outcome.notices, [])
+                    self.assertEqual(outcome.filtered_below, None if accepted else threshold)
+
+    def sauce_http(self, score):
+        http = AsyncMock()
+        http.get_json.return_value = JsonResponse(200, {
+            "header": {"status": 0}, "results": [{
+                "header": {"similarity": str(score), "index_id": 21},
+                "data": {"title": "Candidate", "ext_urls": ["https://example.org/art"]},
+            }],
+        })
+        return http
+
+    async def test_filtered_candidate_followup_and_explicit_isolation(self):
+        for mode in (SearchMode.AUTO, SearchMode.SOURCE):
+            for explicit in (False, True):
+                with self.subTest(mode=mode, explicit=explicit):
+                    sauce = SauceNaoProvider(self.sauce_http(59.99), api_key="test")
+                    lens = self.provider("google_lens")
+                    anime = self.provider("trace_moe")
+                    result = await SearchService(
+                        source_providers=[sauce, lens],
+                        anime_followup_providers=[anime],
+                        low_similarity_provider="google_lens",
+                    ).search(IMAGE, mode,
+                             provider_names=["saucenao"] if explicit else None)
+                    self.assertEqual(result.attempted_providers,
+                                     ["saucenao"] if explicit else ["saucenao", "google_lens"])
+                    self.assertEqual([m.provider for m in result.matches],
+                                     [] if explicit else ["google_lens"])
+                    self.assertEqual(result.notices, [])
+                    self.assertEqual(result.filtered_providers, {"saucenao": 60})
+                    anime.search.assert_not_awaited()
 
     async def test_invalid_followup_rejected(self):
         with self.assertRaises(ValueError):

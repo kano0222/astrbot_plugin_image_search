@@ -205,7 +205,7 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         from ..core.models import ProviderOutcome
         plugin = ImageSearchPlugin(None, {
             "providers": {
-                "saucenao": {"api_key": "test", "send_low_similarity": True,
+                "saucenao": {"api_key": "test",
                             "low_similarity_provider": "google"},
                 "google_lens": {"enabled": True, "serpapi_keys": ["test"]},
                 "ascii2d": {"enabled": False},
@@ -215,9 +215,8 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         })
         try:
             sauce, lens = plugin._service._source_providers
-            self.assertTrue(sauce._send_low_similarity)
+            self.assertEqual(sauce._min_similarity, 60)
             sauce.search = AsyncMock(return_value=ProviderOutcome(
-                matches=[SourceMatch(provider="saucenao", title="Weak", similarity=20)],
                 low_accuracy=True,
             ))
             lens.search = AsyncMock(return_value=ProviderOutcome(
@@ -246,8 +245,9 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         schema = json.loads((root / "_conf_schema.json").read_text(encoding="utf-8"))
         sauce = schema["providers"]["items"]["saucenao"]["items"]
         keys = list(sauce)
-        self.assertEqual(keys[keys.index("min_similarity") + 1], "send_low_similarity")
-        self.assertFalse(sauce["send_low_similarity"]["default"])
+        self.assertNotIn("send_low_similarity", sauce)
+        self.assertNotIn("low_accuracy_threshold", sauce)
+        self.assertEqual(sauce["min_similarity"]["default"], 60)
         self.assertEqual(keys[-1], "low_similarity_provider")
         self.assertEqual(sauce["low_similarity_provider"]["options"], ["off", "Ascii2d", "google"])
         self.assertEqual(sauce["low_similarity_provider"]["default"], "off")
@@ -350,9 +350,129 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(command_output[0].count("https://danbooru.donmai.us/posts/1"), 1)
         selected = self.plugin._service.search.await_args.kwargs["provider_names"]
         self.assertEqual(selected, ["google_lens", "saucenao"])
-        await self.plugin.tool_search_image(event)
+        completion = await self.plugin.tool_search_image(event)
         event.send.assert_awaited_once_with(command_output[0])
         self.assertEqual(len(response.matches), 2)
+        import json
+        feedback = json.loads(completion)
+        self.assertTrue(feedback["message_sent"])
+        self.assertTrue(feedback["success"])
+        self.assertEqual(feedback["count"], 1)
+        self.assertIn("当前会话的人格语气", feedback["instruction"])
+        self.assertNotIn("https://", completion)
+
+    async def test_tool_returns_persona_feedback_after_rich_or_empty_delivery(self):
+        import json
+        self.plugin._get_image_url = AsyncMock(
+            return_value=("https://images.example/test.jpg", None)
+        )
+        for has_result in (False, True):
+            with self.subTest(has_result=has_result):
+                self.plugin._service.search = AsyncMock(return_value=SearchResponse(
+                    matches=[SourceMatch(provider="google_lens", title="Artwork")]
+                    if has_result else [],
+                ))
+                self.plugin._delivery.try_send = AsyncMock(return_value=has_result)
+                event = SimpleNamespace(plain_result=lambda text: text, send=AsyncMock())
+                feedback = json.loads(await self.plugin.tool_search_image(event))
+                self.assertEqual(feedback["success"], has_result)
+                self.assertEqual(feedback["count"], int(has_result))
+                self.assertTrue(feedback["message_sent"])
+                self.assertIn("只回复一句", feedback["instruction"])
+                if has_result:
+                    event.send.assert_not_awaited()
+                else:
+                    event.send.assert_awaited_once()
+                    self.assertIn("没有可展示的结果", feedback["instruction"])
+
+    async def test_tool_explicit_channels_share_aliases_and_never_add_services(self):
+        from ..core.models import ProviderOutcome
+        self.plugin._get_image_url = AsyncMock(
+            return_value=("https://images.example/test.jpg", None)
+        )
+        providers = {p.name: p for p in self.plugin._service._source_providers}
+        for provider in providers.values():
+            provider.search = AsyncMock(return_value=ProviderOutcome())
+        for channels, selected in (
+            ("Google G 谷歌 lens", ["google_lens"]),
+            ("s", ["saucenao"]),
+            ("google,酱 123", ["saucenao", "google_lens"]),
+        ):
+            with self.subTest(channels=channels):
+                for provider in providers.values():
+                    provider.search.reset_mock()
+                event = SimpleNamespace(send=AsyncMock(), plain_result=lambda text: text)
+                await self.plugin.tool_search_image(event, "auto", channels)
+                for name, provider in providers.items():
+                    self.assertEqual(provider.search.await_count, int(name in selected))
+                if "123" in channels:
+                    self.assertEqual(event.send.await_count, 2)
+                    self.assertIn("已忽略：123", event.send.await_args_list[0].args[0])
+                    self.assertIn("可行渠道", event.send.await_args_list[0].args[0])
+        self.plugin._get_image_url.assert_awaited()
+
+    async def test_tool_invalid_channels_do_not_resolve_image_or_search(self):
+        import json
+        await self._configure_services("google_lens", "trace_moe")
+        self.plugin._get_image_url = AsyncMock()
+        self.plugin._service.search = AsyncMock()
+        for mode, channels in (("source", "s"), ("source", "typo"),
+                               ("anime", "google"), ("source", ["google"])):
+            with self.subTest(mode=mode, channels=channels):
+                feedback = json.loads(await self.plugin.tool_search_image(None, mode, channels))
+                self.assertFalse(feedback["success"])
+                self.assertIn("error", feedback)
+        self.plugin._get_image_url.assert_not_awaited()
+        self.plugin._service.search.assert_not_awaited()
+
+    async def test_tool_binds_current_request_when_model_omits_or_misselects_channels(self):
+        import json
+        from ..core.models import ProviderOutcome
+        self.plugin._get_image_url = AsyncMock(
+            return_value=("https://images.example/test.jpg", None)
+        )
+        providers = {p.name: p for p in self.plugin._service._source_providers}
+        for name, provider in providers.items():
+            provider.search = AsyncMock(return_value=ProviderOutcome(matches=[
+                SourceMatch(provider=name, title=name, url="https://example.org/" + name),
+            ]))
+        for text, model_channels, selected in (
+            ("搜一下谷歌", "", ["google_lens"]),
+            ("搜一下谷歌", "s", ["google_lens"]),
+            ("搜一下谷歌和SauceNAO", "g", ["saucenao", "google_lens"]),
+        ):
+            with self.subTest(text=text, model_channels=model_channels):
+                for provider in providers.values():
+                    provider.search.reset_mock()
+                event = self._simple_event(text)
+                feedback = json.loads(await self.plugin.tool_search_image(event, "source", model_channels))
+                self.assertEqual(feedback["attempted_providers"], selected)
+                self.assertEqual(feedback["result_providers"], selected)
+                for name, provider in providers.items():
+                    self.assertEqual(provider.search.await_count, int(name in selected))
+
+    async def test_tool_bound_disabled_channel_cannot_fall_back(self):
+        import json
+        await self._configure_services("google_lens")
+        self.plugin._get_image_url = AsyncMock()
+        self.plugin._service.search = AsyncMock()
+        feedback = json.loads(await self.plugin.tool_search_image(self._simple_event("搜一下SauceNAO")))
+        self.assertFalse(feedback["success"])
+        self.plugin._get_image_url.assert_not_awaited()
+        self.plugin._service.search.assert_not_awaited()
+
+    async def test_tool_request_schema_binds_exact_channels_without_using_quoted_text(self):
+        event = self._simple_event("搜一下谷歌和SauceNAO")
+        request = self._tool_request()
+        await self.plugin.filter_llm_tools(event, request)
+        schema = next(t["function"]["parameters"] for t in request.func_tool.openai_schema()
+                      if t["function"]["name"] == "search_image")
+        self.assertIn("channels", schema["required"])
+        self.assertEqual(schema["properties"]["channels"]["enum"], ["谷歌 SauceNAO"])
+        event = self._simple_event("找下出处", [Reply(text="搜一下谷歌", id="quoted")])
+        request = self._tool_request()
+        await self.plugin.filter_llm_tools(event, request)
+        self.assertNotIn("enum", request.func_tool.get_tool("search_image").parameters["properties"]["channels"])
 
     async def test_source_enrichment_shared_by_command_and_tool(self):
         from ..core.models import ProviderOutcome
@@ -643,6 +763,9 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNot(updated, original)
         self.assertEqual(original.description, "original")
         self.assertNotIn("enum", original.parameters["properties"]["mode"])
+        self.assertNotIn("channels", original.parameters["properties"])
+        self.assertIn("channels", updated.parameters["properties"])
+        self.assertIn("谷歌=google_lens", updated.parameters["properties"]["channels"]["description"])
         self.assertIs(updated.handler, original.handler)
         self.assertIs(req.func_tool.get_tool("other"), shared.get_tool("other"))
         self.assertEqual(
@@ -679,6 +802,7 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool.parameters["properties"]["mode"]["enum"], ["anime"])
         self.assertEqual(tool.parameters["properties"]["mode"]["default"], "anime")
         self.assertNotIn("google_lens", tool.description)
+        self.assertNotIn("channels", tool.parameters["properties"])
         self.plugin._get_image_url = AsyncMock(
             return_value=("https://images.example/query.jpg", None)
         )

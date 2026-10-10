@@ -124,6 +124,7 @@ class SearchService:
         response.failed_providers.extend(followup.response.failed_providers)
         response.failure_details.update(followup.response.failure_details)
         response.notices.extend(followup.response.notices)
+        response.filtered_providers.update(followup.response.filtered_providers)
         return response
 
     async def _run_source_plan(
@@ -150,6 +151,7 @@ class SearchService:
             result = await self._run_providers((provider,), image, mode)
             stage.response.matches.extend(result.response.matches)
             stage.response.notices.extend(result.response.notices)
+            stage.response.filtered_providers.update(result.response.filtered_providers)
             stage.response.attempted_providers.extend(
                 result.response.attempted_providers
             )
@@ -174,6 +176,7 @@ class SearchService:
         extra = await self._run_providers(others, image, mode)
         stage.response.matches.extend(extra.response.matches)
         stage.response.notices.extend(extra.response.notices)
+        stage.response.filtered_providers.update(extra.response.filtered_providers)
         stage.response.attempted_providers.extend(extra.response.attempted_providers)
         stage.response.failed_providers.extend(extra.response.failed_providers)
         stage.response.failure_details.update(extra.response.failure_details)
@@ -216,5 +219,7 @@ class SearchService:
                 continue
             stage.response.matches.extend(result.matches)
             stage.response.notices.extend(result.notices)
+            if result.filtered_below is not None:
+                stage.response.filtered_providers[provider.name] = result.filtered_below
             stage.outcomes.append(result)
         return stage

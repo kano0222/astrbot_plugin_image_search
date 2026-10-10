@@ -71,7 +71,7 @@ class SauceNaoProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(params["output_type"], "2")
         self.assertEqual(params["db"], "999")
 
-    async def test_low_similarity_is_notice_not_match_or_signal(self) -> None:
+    async def test_low_similarity_is_filtered_without_notice_or_signal(self) -> None:
         http = FakeHttpClient(
             JsonResponse(
                 200,
@@ -102,7 +102,8 @@ class SauceNaoProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(outcome.matches, [])
         self.assertFalse(outcome.suggests_anime)
-        self.assertTrue(outcome.notices)
+        self.assertEqual(outcome.notices, [])
+        self.assertTrue(outcome.low_accuracy)
 
     async def test_reports_quota_without_exposing_response_message(self) -> None:
         provider = SauceNaoProvider(

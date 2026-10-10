@@ -20,7 +20,7 @@ The first runnable AstrBot vertical slice is implemented:
   conversation.
 - Local/base64 images use AstrBot's configured callback file service.
 - SerpAPI keys use round-robin selection and quota/authentication failover.
-- The unified `search_image(mode=auto/source/anime)` LLM tool reuses the same
+- The unified `search_image(mode=auto/source/anime, channels="")` LLM tool reuses the same
   orchestration and sends the complete grouped result itself.
 
 Ascii2d color and BOVW searches are implemented with partial failure isolation.
@@ -64,8 +64,11 @@ schema accordingly. Source services allow auto/source; anime services allow anim
 Omitting mode uses auto when source search is enabled, otherwise anime.
 Unavailable modes are rejected before resolving or publishing an image.
 Descriptions and schemas are copied per request, leaving shared tools unchanged.
+用户明确指定来源渠道时，模型须填写 channels 字符串，例如 google 或 g s；支持与命令相同的别名、大小写和分隔符。只搜索所选可用渠道，不追加备用渠道或自动搜番。混合有效/无效渠道时提示并继续有效渠道；全部不可用时不解析或发布图片、不搜索。channels 仅适用于 auto/source；未指定渠道时模型应填写空字符串，使用默认策略。对当前消息整句明确选择渠道的请求（如“搜一下谷歌”“搜一下谷歌和 SauceNAO”），工具会绑定准确渠道，避免模型漏填或填错后执行默认搜索；不读取引用正文、不匹配否定或混合意图、不做拼写模糊匹配。该绑定不改变自然语言直达范围。工具续答依据实际调用及返回结果的渠道，不能将结果归因于未命中的渠道。
 Enabled services can still fail (for example HTTP 403); the tool does not claim
 that all enabled services are called in every conditional search.
+
+真正调用 LLM 搜图工具时，插件先发送完整结果或无结果说明，再让当前会话模型以既有人格语气补一句已使用搜图工具的反馈，不重复结果、链接或错误详情。复用当前模型会话的后续回复，会产生一次工具完成后的模型续答；不另行调用人格生成模型。命令与简单自然语言直达不走这条续答路径。单句和人格语气由模型遵循指令，不能保证每次严格一致。
 
 ## Search intents
 
@@ -160,9 +163,9 @@ QQ 群聊/私聊消息经过实际适配器序列化，但发送动作使用模�
 
 ### 低相似度候选与补搜
 
-SauceNAO 的“最低相似度百分比”（默认 40）控制展示门槛。其下方“相似度过低时是否发送”默认关闭；开启后可发送低于门槛的候选，并明确提示仅供参考，不将其升级为可靠结果。
+SauceNAO 的“最低相似度百分比”（默认 60）统一控制展示与补搜判断：低于门槛的候选不展示，也不触发自动搜番；达到门槛才展示。
 
-“低可信补搜阈值百分比”（默认 60）控制低可信判断；也会将低于最低展示门槛的结果视为低可信。“SauceNAO 相似度过低时自动使用”默认 off，另可选 Ascii2d 或 google。仅补搜所选已启用渠道一次，失败或无结果也不追加其他渠道；未启用时提示检查配置。是否发送低相似度候选与是否补搜是两个独立决定。
+“SauceNAO 相似度过低时自动使用”默认 off，另可选 Ascii2d 或 google。低于最低相似度时，仅补搜所选已启用渠道一次，失败或无结果也不追加其他渠道；未启用时提示检查配置。不发送低相似度候选或“仅供参考”提示。无可展示结果时，分别说明候选低于门槛未展示、渠道未找到匹配或接口失败；补搜成功时不附加低相似度说明。
 
 明确指定渠道的命令不追加补搜；默认搜图、简单自然语言直达及 LLM 的 auto/source 模式共享上述策略。完全无候选、接口失败或 SauceNAO 未启用时，仍使用既有备用搜索策略；这与低相似度补搜开关不同。自定义渠道顺序配置已移除。
 
