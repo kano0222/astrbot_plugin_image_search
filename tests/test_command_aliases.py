@@ -6,6 +6,11 @@ from command_aliases import build_channel_aliases
 
 
 class ChannelAliasTests(unittest.TestCase):
+    def test_refresh_keyword_is_reserved(self):
+        aliases, invalid = build_channel_aliases({"saucenao": {"aliases": ["-purge"]}})
+        self.assertNotIn("-purge", aliases)
+        self.assertEqual(invalid, 1)
+
     def test_custom_aliases_and_builtin_targets(self):
         aliases, invalid = build_channel_aliases(
             {

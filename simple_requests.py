@@ -17,6 +17,14 @@ _END = "。！？.!?～~"
 class SimpleSearchRequest:
     channels: str = ""
     requires_image: bool = False
+    refresh: bool = False
+
+
+def split_search_options(text: str) -> tuple[str, bool]:
+    tokens = re.split(r"[\s,，、]+", text.strip()) if text.strip() else []
+    if "-purge" not in tokens:
+        return text.strip(), False
+    return " ".join(token for token in tokens if token != "-purge"), True
 
 
 def parse_simple_request(
@@ -32,7 +40,7 @@ def parse_simple_request(
         match = re.fullmatch(_PREFIX + pattern + r"(?:\s+(.+))?", text)
         if match is None:
             continue
-        channels = match.group(1) or ""
+        channels, refresh = split_search_options(match.group(1) or "")
         tokens = re.split(r"[\s,，、]+", channels.lower()) if channels else []
         # Unknown numeric channel names use the command's existing warning;
         # arbitrary Chinese text must not be interpreted as a channel selection.
@@ -41,7 +49,7 @@ def parse_simple_request(
             and re.fullmatch(r"[0-9]+", token) is None
         ) for token in tokens):
             return None
-        return SimpleSearchRequest(channels=channels, requires_image=requires_image)
+        return SimpleSearchRequest(channels=channels, requires_image=requires_image, refresh=refresh)
     return None
 
 

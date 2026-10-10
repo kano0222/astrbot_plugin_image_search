@@ -74,7 +74,7 @@ class ResultCardTests(unittest.TestCase):
         ]))
         self.assertEqual(cards[0].image_after_lines, 2)
         self.assertNotIn("图片来源", cards[0].text)
-        self.assertTrue(cards[0].text.startswith("1. SauceNAO (90.00%)"))
+        self.assertTrue(cards[0].text.startswith("SauceNAO (90.00%)"))
 
     def test_google_only_card_has_no_source_heading(self):
         cards = build_result_cards(SearchResponse(matches=[
@@ -87,6 +87,6 @@ class ResultCardTests(unittest.TestCase):
         match = SourceMatch(provider="google_lens", title="Art", site_name="Example",
                             url="https://site.test/a", thumbnail_url="https://images.test/a")
         card = build_result_cards(SearchResponse(matches=[match]))[0]
-        self.assertEqual(card.text, "1. Google Lens\nArt\nhttps://site.test/a")
+        self.assertEqual(card.text, "Google Lens\nArt\nhttps://site.test/a")
         self.assertEqual(card.image_after_lines, 2)
         self.assertEqual(card.preview_urls, ("https://images.test/a",))

@@ -28,6 +28,20 @@ class FakeHttpClient:
 
 
 class TraceMoeProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_timeout_has_explicit_safe_diagnostic(self):
+        from unittest.mock import AsyncMock
+        from core.provider import safe_failure_reason
+        provider = TraceMoeProvider(AsyncMock(get_json=AsyncMock(side_effect=TimeoutError())))
+        with self.assertRaises(ProviderError) as error:
+            await provider.search(ImageAsset(url="https://img.test/a"), SearchMode.ANIME)
+        self.assertEqual(safe_failure_reason(error.exception), "请求超时")
+
+    async def test_filtered_candidate_preserves_quota_signal(self):
+        http = FakeHttpClient(JsonResponse(200, {"result": [{"filename": "scene", "similarity": 0.5}]}))
+        outcome = await TraceMoeProvider(http).search(ImageAsset(url="https://img.test/a"), SearchMode.ANIME)
+        self.assertEqual(outcome.matches, [])
+        self.assertEqual(outcome.filtered_below, 85)
+
     async def test_parses_anilist_scene_result(self) -> None:
         http = FakeHttpClient(
             JsonResponse(

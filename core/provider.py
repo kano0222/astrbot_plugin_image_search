@@ -36,6 +36,8 @@ def safe_failure_reason(error: BaseException) -> str:
         known = {
             "Google Lens request timed out": "请求超时",
             "SauceNAO request timed out": "请求超时",
+            "Ascii2d request timed out": "请求超时",
+            "trace.moe request timed out": "请求超时",
             "Google Lens request failed": "网络请求失败",
             "SauceNAO request failed": "网络请求失败",
             "all SerpAPI credentials or quotas were rejected": "全部 SerpAPI Key 认证失败或额度受限",

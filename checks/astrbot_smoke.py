@@ -20,6 +20,7 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         self.plugin = ImageSearchPlugin(
             None,
             {
+                "cache": {"enabled": False},
                 "providers": {
                     "google_lens": {"serpapi_keys": ["test-serp-key"]},
                     "saucenao": {"api_key": "test-sauce-key", "aliases": ["s", "酱"]},
@@ -204,6 +205,7 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
     async def test_low_similarity_configuration_shared_by_natural_and_tool(self):
         from ..core.models import ProviderOutcome
         plugin = ImageSearchPlugin(None, {
+            "cache": {"enabled": False},
             "providers": {
                 "saucenao": {"api_key": "test",
                             "low_similarity_provider": "google"},
@@ -278,10 +280,46 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(phrase, joined)
         ids = re.findall(r"id=([a-f0-9]{8})", joined)
         self.assertEqual(len(set(ids)), 1)
-        self.assertEqual(len(ids), 4)
+        self.assertGreaterEqual(len(ids), 4)
+        self.assertIn("缓存=跳过:缓存关闭", joined)
+        self.assertIn("URL指纹=", joined)
+        self.assertIn("外部搜索图片=1", joined)
         self.assertNotIn("secret", joined)
         self.assertNotIn("private.example", joined)
         self.assertNotIn("private-title", joined)
+
+    async def test_cache_logs_distinguish_hits_url_changes_and_refresh_without_urls(self):
+        import re
+        self.plugin._cache_enabled = True
+        self.plugin._service.search = AsyncMock(return_value=SearchResponse(
+            attempted_providers=["saucenao"], matches=[SourceMatch("saucenao", "private-title")]))
+        self.plugin._delivery.try_send = AsyncMock(return_value=True)
+        snapshots = []
+        for url, options in (("https://private.example/image?secret=1", ""),
+                             ("https://private.example/image?secret=1", ""),
+                             ("https://private.example/image?secret=2", ""),
+                             ("https://private.example/image?secret=1", "-purge")):
+            event = self._simple_event("搜图", [Image(file=url)])
+            with patch(ImageSearchPlugin.__module__ + ".logger.info") as log:
+                _ = [r async for r in self.plugin.search_image_command(event, options)]
+            snapshots.append("\n".join(str(call.args[0]) for call in log.call_args_list))
+        self.assertIn("缓存=未命中:无有效记录", snapshots[0])
+        self.assertIn("缓存=命中 缓存年龄=", snapshots[1])
+        self.assertIn("外部搜索=无", snapshots[1])
+        self.assertNotIn("搜索开始", snapshots[1])
+        self.assertIn("缓存图片=1 外部搜索图片=0", snapshots[1])
+        self.assertIn("缓存=未命中:无有效记录", snapshots[2])
+        self.assertIn("缓存=跳过:用户重搜", snapshots[3])
+        identities = [re.search(r"URL指纹=(\w+)", item).group(1) for item in snapshots]
+        self.assertEqual(identities[0], identities[1])
+        self.assertNotEqual(identities[0], identities[2])
+        conditions = [re.search(r"条件指纹=(\w+)", item).group(1) for item in snapshots]
+        self.assertEqual(len(set(conditions)), 1)
+        self.assertEqual(self.plugin._service.search.await_count, 3)
+        for snapshot in snapshots:
+            self.assertNotIn("secret", snapshot)
+            self.assertNotIn("private.example", snapshot)
+            self.assertNotIn("private-title", snapshot)
 
     async def test_search_log_exception_does_not_expose_error_body(self):
         from ..core.models import ImageAsset, SearchMode
@@ -849,6 +887,396 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         options = schema["providers"]["items"]["google_lens"]["items"]["search_type"]["options"]
         self.assertEqual(set(options), {"all", "visual_matches", "exact_matches"})
 
+
+    async def test_cache_hit_is_free_and_refresh_updates_result(self):
+        import json
+        self.plugin._cache_enabled = True
+        self.plugin._daily_limit = 1
+        event = self._simple_event("搜图", [Image(file="https://img.test/a")])
+        value = SearchResponse(matches=[SourceMatch("saucenao", "first")], attempted_providers=["saucenao"])
+        self.plugin._service.search = AsyncMock(return_value=value)
+        await self.plugin.tool_search_image(event)
+        event.send.reset_mock()
+        feedback = json.loads(await self.plugin.tool_search_image(event))
+        self.assertEqual(self.plugin._service.search.await_count, 1)
+        self.assertEqual(feedback["cached_images"], 1)
+        self.assertEqual(feedback["attempted_providers"], [])
+        self.assertIn("[缓存]", event.send.await_args_list[0].args[0])
+        self.assertEqual(event.send.await_count, 1)
+        user = self.plugin._quota_user(event)
+        self.assertEqual(self.plugin._search_state().count(user, self.plugin._day()), 1)
+        # Refresh obeys quota even when an old cache entry exists.
+        event.send.reset_mock()
+        await self.plugin.tool_search_image(event, refresh=True)
+        self.assertEqual(self.plugin._service.search.await_count, 1)
+        self.assertIn("上限", event.send.await_args.args[0])
+        self.plugin._daily_limit = 2
+        self.plugin._service.search.return_value = SearchResponse(matches=[SourceMatch("saucenao", "new")])
+        await self.plugin.tool_search_image(event, refresh=True)
+        self.assertEqual(self.plugin._service.search.await_count, 2)
+        self.assertTrue(self.plugin._service.search.await_args.args[0].refresh)
+        event.send.reset_mock()
+        await self.plugin.tool_search_image(event)
+        self.assertIn("new", event.send.await_args.args[0])
+
+    async def test_empty_and_failed_search_refund_but_filtered_candidate_counts(self):
+        self.plugin._daily_limit = 1
+        event = self._simple_event("搜图", [Image(file="https://img.test/a")])
+        self.plugin._service.search = AsyncMock(return_value=SearchResponse(
+            attempted_providers=["saucenao"], failed_providers=["saucenao"]))
+        await self.plugin.tool_search_image(event)
+        user = self.plugin._quota_user(event)
+        self.assertEqual(self.plugin._search_state().count(user, self.plugin._day()), 0)
+        self.plugin._service.search.return_value = SearchResponse(attempted_providers=["saucenao"])
+        await self.plugin.tool_search_image(event)
+        self.assertEqual(self.plugin._search_state().count(user, self.plugin._day()), 0)
+        self.plugin._service.search.return_value = SearchResponse(
+            attempted_providers=["saucenao"], filtered_providers={"saucenao": 60})
+        await self.plugin.tool_search_image(event)
+        self.assertEqual(self.plugin._search_state().count(user, self.plugin._day()), 1)
+        await self.plugin.tool_search_image(event)
+        self.assertEqual(self.plugin._service.search.await_count, 3)
+
+    async def test_admin_is_exempt_and_group_private_share_quota(self):
+        self.plugin._daily_limit = 1
+        self.plugin._service.search = AsyncMock(return_value=SearchResponse(
+            matches=[SourceMatch("saucenao", "work")]))
+        first = self._simple_event("搜图", [Image(file="https://img.test/a")])
+        first.get_platform_id = lambda: "qq"
+        second = self._simple_event("搜图", [Image(file="https://img.test/b")])
+        second.get_platform_id = lambda: "qq"
+        second.unified_msg_origin = "qq:FriendMessage:sender"
+        await self.plugin.tool_search_image(first)
+        await self.plugin.tool_search_image(second)
+        self.assertEqual(self.plugin._service.search.await_count, 1)
+        second.is_admin = lambda: True
+        await self.plugin.tool_search_image(second)
+        await self.plugin.tool_search_image(second)
+        self.assertEqual(self.plugin._service.search.await_count, 3)
+
+    async def test_batch_limit_order_partial_failure_and_per_image_quota(self):
+        self.plugin._batch_limit = 2
+        event = self._simple_event("搜图", [Image(file=f"https://img.test/{i}") for i in range(3)])
+        self.plugin._service.search = AsyncMock(side_effect=[
+            SearchResponse(matches=[SourceMatch("google_lens", "work")]),
+            SearchResponse(attempted_providers=["google_lens"], failed_providers=["google_lens"]),
+        ])
+        output = [message async for message in self.plugin.search_image_command(event, "g -purge")]
+        self.assertIn("后 1 张未处理", output[0])
+        self.assertFalse(any("第 1/2" in message or "第 2/2" in message for message in output))
+        self.assertIn("第 2 张图片", output[-1])
+        self.assertIn("work", output[-2])
+        self.assertEqual(len(output), 3)
+        calls = self.plugin._service.search.await_args_list
+        self.assertEqual([call.args[0].url for call in calls], ["https://img.test/0", "https://img.test/1"])
+        self.assertTrue(all(call.args[0].refresh for call in calls))
+        self.assertTrue(all(call.kwargs["provider_names"] == ["google_lens"] for call in calls))
+        self.assertEqual(self.plugin._search_state().count(self.plugin._quota_user(event), self.plugin._day()), 1)
+
+    async def test_command_and_tool_deliver_batch_once_after_all_searches(self):
+        self.plugin._service.search = AsyncMock(return_value=SearchResponse(
+            matches=[SourceMatch("google_lens", "work", url="https://site.test/same")]))
+        self.plugin._delivery.try_send_batch = AsyncMock(return_value=True)
+        self.plugin._delivery.try_send = AsyncMock(return_value=True)
+        for use_tool in (False, True):
+            event = self._simple_event("搜图", [Image(file=f"https://img.test/{i}") for i in range(2)])
+            self.plugin._delivery.try_send_batch.reset_mock()
+            self.plugin._service.search.reset_mock()
+            if use_tool:
+                await self.plugin.tool_search_image(event)
+            else:
+                self.assertEqual([r async for r in self.plugin.search_image_command(event, "")], [])
+            self.plugin._delivery.try_send_batch.assert_awaited_once()
+            self.assertEqual(self.plugin._service.search.await_count, 2)
+            entries = self.plugin._delivery.try_send_batch.await_args.args[1]
+            self.assertEqual([item.image_index for item in entries], [1, 2])
+        self.plugin._delivery.try_send.assert_not_awaited()
+
+    async def test_batch_cache_is_marked_in_results_without_separate_notices(self):
+        self.plugin._cache_enabled = True
+        self.plugin._service.search = AsyncMock(return_value=SearchResponse(
+            matches=[SourceMatch("saucenao", "work")], attempted_providers=["saucenao"]))
+        self.plugin._delivery.try_send_batch = AsyncMock(return_value=True)
+        event = self._simple_event("搜图", [Image(file=f"https://img.test/{i}") for i in range(2)])
+        _ = [r async for r in self.plugin.search_image_command(event, "")]
+        output = [r async for r in self.plugin.search_image_command(event, "")]
+        self.assertEqual(output, [])
+        entries = self.plugin._delivery.try_send_batch.await_args.args[1]
+        self.assertTrue(all(item.cached and not item.message for item in entries))
+        self.assertEqual(self.plugin._service.search.await_count, 2)
+
+    async def test_changed_urls_hit_stable_identity_across_batch_command_and_quoted_tool(self):
+        import json
+        self.plugin._cache_enabled = True
+        self.plugin._service.search = AsyncMock(return_value=SearchResponse(
+            matches=[SourceMatch("saucenao", "work")], attempted_providers=["saucenao"]))
+        self.plugin._delivery.try_send_batch = AsyncMock(return_value=True)
+        def payload(prefix):
+            return {"message": [{"type": "image", "data": {
+                "file_unique": f"stable-{i}", "url": f"https://img.test/{prefix}/{i}"}}
+                for i in range(2)]}
+        first = self._simple_event("搜图", [Image(file=f"https://img.test/first/{i}") for i in range(2)])
+        first.message_obj = SimpleNamespace(raw_message=payload("first"))
+        _ = [r async for r in self.plugin.search_image_command(first, "")]
+        quoted = self._simple_event("搜图", [Reply(id="123", chain=[Image(file=f"https://img.test/second/{i}") for i in range(2)])])
+        quoted.bot = SimpleNamespace(api=SimpleNamespace(call_action=AsyncMock(return_value=payload("second"))))
+        feedback = json.loads(await self.plugin.tool_search_image(quoted, mode="auto"))
+        self.assertEqual(feedback["cached_images"], 2)
+        self.assertEqual(feedback["attempted_providers"], [])
+        self.assertEqual(self.plugin._service.search.await_count, 2)
+        self.assertTrue(all(item.cached for item in self.plugin._delivery.try_send_batch.await_args.args[1]))
+        self.assertEqual(quoted.send.await_count, 0)
+        _ = [r async for r in self.plugin.search_image_command(first, "-purge")]
+        self.assertEqual(self.plugin._service.search.await_count, 4)
+        different = self._simple_event("搜图", [Image(file=f"https://img.test/first/{i}") for i in range(2)])
+        changed_payload = payload("first")
+        for segment in changed_payload["message"]:
+            segment["data"]["file_unique"] += "-different"
+        different.message_obj = SimpleNamespace(raw_message=changed_payload)
+        _ = [r async for r in self.plugin.search_image_command(different, "")]
+        self.assertEqual(self.plugin._service.search.await_count, 6)
+        self.assertTrue(all(not item.cached for item in self.plugin._delivery.try_send_batch.await_args.args[1]))
+
+    async def test_waiting_image_preserves_stable_identity_for_later_resend(self):
+        self.plugin._cache_enabled = True
+        self.plugin._service.search = AsyncMock(return_value=SearchResponse(
+            matches=[SourceMatch("saucenao", "work")], attempted_providers=["saucenao"]))
+        initial = self._simple_event("搜图")
+        output = self.plugin.search_image_command(initial, "")
+        self.assertIn("发送图片", await anext(output))
+        later = self._simple_event("", [Image(file="https://img.test/first")])
+        later.message_obj = SimpleNamespace(raw_message={"message": [{"type": "image", "data": {
+            "file": "a" * 32 + ".image", "url": "https://img.test/first"}}]})
+        await self.plugin.capture_waiting_image(later)
+        _ = [r async for r in output]
+        resent = self._simple_event("搜图", [Image(file="https://img.test/second")])
+        resent.message_obj = SimpleNamespace(raw_message={"message": [{"type": "image", "data": {
+            "md5": "a" * 32, "url": "https://img.test/second"}}]})
+        messages = [r async for r in self.plugin.search_image_command(resent, "")]
+        self.assertEqual(self.plugin._service.search.await_count, 1)
+        self.assertTrue(any("[缓存]" in message for message in messages))
+
+    async def test_purge_overwrites_success_and_keeps_old_record_on_failure(self):
+        self.plugin._cache_enabled = True
+        event = self._simple_event("搜图", [Image(file="https://img.test/same")])
+        self.plugin._delivery.try_send = AsyncMock(return_value=True)
+        self.plugin._service.search = AsyncMock(side_effect=[
+            SearchResponse(matches=[SourceMatch("saucenao", "old")], attempted_providers=["saucenao"]),
+            SearchResponse(matches=[SourceMatch("saucenao", "new")], attempted_providers=["saucenao"]),
+            SearchResponse(attempted_providers=["saucenao"], failed_providers=["saucenao"]),
+        ])
+        _ = [r async for r in self.plugin.search_image_command(event, "")]
+        _ = [r async for r in self.plugin.search_image_command(event, "-purge")]
+        _ = [r async for r in self.plugin.search_image_command(event, "")]
+        self.assertEqual(self.plugin._service.search.await_count, 2)
+        self.assertEqual(self.plugin._delivery.try_send.await_args.args[1].matches[0].title, "new")
+        failed = [r async for r in self.plugin.search_image_command(event, "-purge")]
+        self.assertFalse(any("[缓存]" in message for message in failed))
+        self.assertEqual(self.plugin._delivery.try_send.await_args.args[1].matches, [])
+        _ = [r async for r in self.plugin.search_image_command(event, "")]
+        self.assertEqual(self.plugin._service.search.await_count, 3)
+        self.assertEqual(self.plugin._delivery.try_send.await_args.args[1].matches[0].title, "new")
+
+    async def test_refresh_order_and_anime_options(self):
+        self.plugin._service.search = AsyncMock(return_value=SearchResponse())
+        event = self._simple_event("搜图", [Image(file="https://img.test/a")])
+        for text in ("-purge g s", "g -purge s", "g s -purge"):
+            _ = [r async for r in self.plugin.search_image_command(event, text)]
+            call = self.plugin._service.search.await_args
+            self.assertTrue(call.args[0].refresh)
+            self.assertEqual(call.kwargs["provider_names"], ["google_lens", "saucenao"])
+        _ = [r async for r in self.plugin.search_anime_command(event, "-purge")]
+        self.assertEqual(self.plugin._service.search.await_args.args[1].value, "anime")
+        self.assertTrue(self.plugin._service.search.await_args.args[0].refresh)
+
+    async def test_wait_handoff_keeps_batch_and_refresh(self):
+        import asyncio
+        from ..core.models import SearchMode
+        event = self._simple_event("搜图 -purge")
+        self.plugin._service.search = AsyncMock(return_value=SearchResponse())
+        output = self.plugin._run_search(event, SearchMode.AUTO, refresh=True)
+        self.assertIn("发送图片", await anext(output))
+        later = self._simple_event("", [Image(file="https://img.test/a"), Image(file="https://img.test/b")])
+        await self.plugin.capture_waiting_image(later)
+        self.assertTrue(later.is_stopped())
+        _ = [message async for message in output]
+        self.assertEqual(self.plugin._service.search.await_count, 2)
+        self.assertTrue(all(call.args[0].refresh for call in self.plugin._service.search.await_args_list))
+
+    async def test_feedback_once_after_actual_search_budget_and_not_for_cache(self):
+        import asyncio
+        self.plugin._feedback_delay = 0.01
+        self.plugin._cache_enabled = True
+        async def search(*args, **kwargs):
+            await asyncio.sleep(0.02)
+            return SearchResponse(matches=[SourceMatch("saucenao", "work")])
+        self.plugin._service.search = AsyncMock(side_effect=search)
+        event = self._simple_event("搜图", [Image(file="https://img.test/a"), Image(file="https://img.test/b")])
+        await self.plugin.tool_search_image(event)
+        self.assertEqual(sum("正在搜索" in call.args[0] for call in event.send.await_args_list), 1)
+        event.send.reset_mock()
+        await self.plugin.tool_search_image(event)
+        self.assertFalse(any("正在搜索" in call.args[0] for call in event.send.await_args_list))
+
+    async def test_cancellation_refunds_and_cleans_feedback(self):
+        import asyncio
+        started = asyncio.Event()
+        async def search(*args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+        self.plugin._service.search = AsyncMock(side_effect=search)
+        event = self._simple_event("搜图", [Image(file="https://img.test/a")])
+        task = asyncio.create_task(self.plugin.tool_search_image(event))
+        await started.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertEqual(self.plugin._search_state().count(self.plugin._quota_user(event), self.plugin._day()), 0)
+        event.send.assert_not_awaited()
+
+    async def test_day_uses_bot_timezone(self):
+        from datetime import datetime, timezone
+        self.plugin.context = SimpleNamespace(get_config=lambda: {"timezone": "America/Los_Angeles"})
+        instant = datetime(2026, 10, 11, 0, 30, tzinfo=timezone.utc)
+        with patch(ImageSearchPlugin.__module__ + ".datetime") as clock:
+            clock.now.side_effect = lambda zone: instant.astimezone(zone)
+            self.assertEqual(self.plugin._day(), "2026-10-10")
+            self.plugin.context.get_config = lambda: {"timezone": "Asia/Shanghai"}
+            self.assertEqual(self.plugin._day(), "2026-10-11")
+
+    async def test_tool_refresh_schema_and_current_request(self):
+        import json
+        event = self._simple_event("搜图 g -purge", [Image(file="https://img.test/a")])
+        request = self._tool_request()
+        await self.plugin.filter_llm_tools(event, request)
+        tool = request.func_tool.get_tool("search_image")
+        self.assertEqual(tool.parameters["properties"]["refresh"]["enum"], [True])
+        self.assertEqual(tool.parameters["properties"]["channels"]["enum"], ["g"])
+        self.plugin._service.search = AsyncMock(return_value=SearchResponse())
+        await self.plugin.tool_search_image(event)
+        self.assertTrue(self.plugin._service.search.await_args.args[0].refresh)
+        self.assertEqual(self.plugin._service.search.await_args.kwargs["provider_names"], ["google_lens"])
+        invalid = json.loads(await self.plugin.tool_search_image(event, refresh="yes"))
+        self.assertIn("布尔", invalid["error"])
+
+    async def test_concurrent_requests_cannot_exceed_daily_quota(self):
+        import asyncio
+        self.plugin._daily_limit = 1
+        started, release = asyncio.Event(), asyncio.Event()
+        async def search(*args, **kwargs):
+            started.set()
+            await release.wait()
+            return SearchResponse(matches=[SourceMatch("saucenao", "work")])
+        self.plugin._service.search = AsyncMock(side_effect=search)
+        event = self._simple_event("搜图", [Image(file="https://img.test/a")])
+        first = asyncio.create_task(self.plugin.tool_search_image(event))
+        await started.wait()
+        await self.plugin.tool_search_image(event)
+        release.set()
+        await first
+        self.assertEqual(self.plugin._service.search.await_count, 1)
+        self.assertTrue(any("上限" in call.args[0] for call in event.send.await_args_list))
+
+    async def test_unexpected_single_image_failure_does_not_stop_batch(self):
+        event = self._simple_event("搜图", [Image(file="https://img.test/a"), Image(file="https://img.test/b")])
+        self.plugin._service.search = AsyncMock(side_effect=[RuntimeError("secret upstream URL"),
+            SearchResponse(matches=[SourceMatch("saucenao", "second")])])
+        output = [message async for message in self.plugin.search_image_command(event, "")]
+        self.assertTrue(any("这张图片搜索失败" in message for message in output))
+        self.assertTrue(any("second" in message for message in output))
+        self.assertFalse(any("secret" in message for message in output))
+        self.assertEqual(self.plugin._search_state().count(self.plugin._quota_user(event), self.plugin._day()), 1)
+
+    async def test_delivery_wait_does_not_trigger_search_feedback(self):
+        import asyncio
+        self.plugin._feedback_delay = 0.01
+        self.plugin._service.search = AsyncMock(return_value=SearchResponse(matches=[SourceMatch("saucenao", "work")]))
+        async def deliver(*args, **kwargs):
+            await asyncio.sleep(0.02)
+            return True
+        self.plugin._delivery.try_send_batch = AsyncMock(side_effect=deliver)
+        event = self._simple_event("搜图", [Image(file="https://img.test/a"), Image(file="https://img.test/b")])
+        await self.plugin.tool_search_image(event)
+        self.assertFalse(any("正在搜索" in call.args[0] for call in event.send.await_args_list))
+
+    async def test_storage_is_confined_and_survives_plugin_reload(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            self.plugin.context = SimpleNamespace(get_config=lambda: {"timezone": "Asia/Shanghai"})
+            with patch(ImageSearchPlugin.__module__ + ".StarTools.get_data_dir", return_value=Path(directory)) as data_dir:
+                state = self.plugin._search_state()
+                self.assertTrue(state.reserve("user", "2026-10-10", 1))
+                state.close()
+                self.plugin._state = None
+                self.assertFalse(self.plugin._search_state().reserve("user", "2026-10-10", 1))
+                self.assertTrue(all(call.args == ("astrbot_plugin_image_search",) for call in data_dir.call_args_list))
+                self.assertEqual([file.name for file in Path(directory).iterdir()], ["search_state.sqlite3"])
+                self.plugin._state.close()
+                self.plugin._state = None
+
+    async def test_quoted_batch_is_supported_and_direct_images_take_priority(self):
+        quoted = Reply(id="quoted", chain=[Image(file="https://img.test/q1"), Image(file="https://img.test/q2")])
+        event = self._simple_event("搜图", [quoted])
+        with patch(ImageSearchPlugin.__module__ + ".extract_quoted_message_images", AsyncMock(return_value=["https://img.test/q1", "https://img.test/q2"])) as extract:
+            images, total = await self.plugin._resolve_images(event)
+            self.assertEqual([url for url, _ in images], ["https://img.test/q1", "https://img.test/q2"])
+            self.assertEqual(total, 2)
+            extract.assert_not_awaited()
+            extract.reset_mock()
+            event = self._simple_event("搜图", [Image(file="https://img.test/a"), Image(file="https://img.test/b"), quoted])
+            images, total = await self.plugin._resolve_images(event)
+            self.assertEqual([url for url, _ in images], ["https://img.test/a", "https://img.test/b"])
+            extract.assert_not_awaited()
+
+
+    async def test_localized_single_reply_alternatives_are_one_image(self):
+        reply = Reply(id="123", chain=[Image(file="/tmp/local.jpg", url="/tmp/local.jpg")])
+        event = self._simple_event("搜图", [reply])
+        self.plugin._service.search = AsyncMock(return_value=SearchResponse(
+            matches=[SourceMatch("saucenao", "work")]))
+        with patch(ImageSearchPlugin.__module__ + ".extract_quoted_message_images",
+                   AsyncMock(return_value=["/tmp/local.jpg", "https://img.test/original"])) as extract, patch.object(
+                   Image, "register_to_file_service", AsyncMock()) as publish:
+            images, total = await self.plugin._resolve_images(event)
+            self.assertEqual(images, [("https://img.test/original", None)])
+            self.assertEqual(total, 1)
+            output = [message async for message in self.plugin.search_image_command(event, "")]
+            self.assertFalse(any("第 1/2" in message or "文件服务" in message for message in output))
+            self.assertEqual(self.plugin._service.search.await_count, 1)
+            publish.assert_not_awaited()
+
+    async def test_structured_reply_counts_segments_not_alternative_references(self):
+        self.plugin._cache_enabled = True
+        reply = Reply(id="123", chain=[Image(file="/tmp/local.jpg")])
+        event = self._simple_event("搜图", [reply])
+        call_action = AsyncMock(return_value={"data": {"message": [
+            {"type": "image", "data": {"file": "/tmp/local.jpg", "url": "https://img.test/original"}},
+        ]}})
+        event.bot = SimpleNamespace(api=SimpleNamespace(call_action=call_action))
+        self.plugin._service.search = AsyncMock(return_value=SearchResponse(
+            matches=[SourceMatch("saucenao", "work")]))
+        with patch.object(Image, "register_to_file_service", AsyncMock()) as publish:
+            first = [message async for message in self.plugin.search_image_command(event, "")]
+            second = [message async for message in self.plugin.search_image_command(event, "")]
+            self.assertFalse(any("第 " in message for message in first))
+            self.assertTrue(any("[缓存]" in message for message in second))
+            self.assertEqual(self.plugin._service.search.await_count, 1)
+            self.assertEqual(self.plugin._search_state().count(self.plugin._quota_user(event), self.plugin._day()), 1)
+            publish.assert_not_awaited()
+            call_action.assert_awaited_with("get_msg", message_id=123)
+
+    async def test_localized_multi_reply_preserves_original_order(self):
+        reply = Reply(id="123", chain=[Image(file="/tmp/a.jpg"), Image(file="/tmp/b.jpg")])
+        event = self._simple_event("搜图", [reply])
+        event.bot = SimpleNamespace(api=SimpleNamespace(call_action=AsyncMock(return_value={"message": [
+            {"type": "image", "data": {"file": "/tmp/a.jpg", "url": "https://img.test/a"}},
+            {"type": "image", "data": {"file": "/tmp/b.jpg", "url": "https://img.test/b"}},
+        ]})))
+        with patch.object(Image, "register_to_file_service", AsyncMock()) as publish:
+            images, total = await self.plugin._resolve_images(event)
+            self.assertEqual(total, 2)
+            self.assertEqual(images, [("https://img.test/a", None), ("https://img.test/b", None)])
+            publish.assert_not_awaited()
 
 if __name__ == "__main__":
     unittest.main()

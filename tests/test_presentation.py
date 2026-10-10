@@ -3,10 +3,32 @@ from __future__ import annotations
 import unittest
 
 from core.models import AnimeMatch, SearchResponse, SourceMatch
-from presentation import format_search_response
+from presentation import BatchResult, build_batch_cards, build_result_cards, format_search_response
 
 
 class PresentationTests(unittest.TestCase):
+    def test_cached_cards_and_plain_fallback_mark_each_match_without_mutating_response(self):
+        response = SearchResponse(matches=[SourceMatch("google_lens", "First", url="https://site.test/1"),
+                                           SourceMatch("google_lens", "Second", url="https://site.test/2")])
+        self.assertTrue(build_result_cards(response, cached=True)[0].text.startswith("Google Lens[缓存]\n1. First"))
+        self.assertEqual(format_search_response(response, cached=True).count("[缓存]"), 1)
+        self.assertNotIn("[缓存]", format_search_response(response))
+        self.assertNotIn("重搜", format_search_response(response, cached=True))
+    def test_single_source_and_anime_results_have_no_number(self):
+        for match in (SourceMatch("google_lens", "Artwork"), AnimeMatch("trace_moe", "Anime")):
+            response = SearchResponse(matches=[match])
+            self.assertNotIn("1. ", format_search_response(response))
+            self.assertNotIn("1. ", build_result_cards(response)[0].text)
+
+    def test_batch_keeps_input_results_separate_and_identifies_failures(self):
+        response = SearchResponse(matches=[SourceMatch("google_lens", "Art", url="https://site.test/art")])
+        cards = build_batch_cards([BatchResult(1, response), BatchResult(2, response),
+                                   BatchResult(3, message="获取图片失败")])
+        self.assertEqual(len(cards), 3)
+        self.assertEqual(cards[0], cards[1])
+        self.assertNotIn("1. ", cards[0].text)
+        self.assertEqual(cards[2].text, "第 3 张图片\n获取图片失败")
+
     def test_empty_results_distinguish_filtered_candidates_and_no_match(self):
         text = format_search_response(SearchResponse(
             attempted_providers=["saucenao", "google_lens"],
@@ -67,7 +89,7 @@ class PresentationTests(unittest.TestCase):
         text = format_search_response(response)
 
         self.assertNotIn("图片来源", text)
-        self.assertIn("1. Google Lens\nSource", text)
+        self.assertIn("Google Lens\n1. Source", text)
         self.assertIn("1. [trace.moe] Anime", text)
         self.assertIn("动画场景", text)
         self.assertIn("01:05–01:07", text)
@@ -104,7 +126,7 @@ class PresentationTests(unittest.TestCase):
         text = format_search_response(response)
         self.assertIn("1. SauceNAO\n「Illustration」", text)
         self.assertIn("2. [Ascii2d] Color match", text)
-        self.assertIn("3. Google Lens\nWeb match", text)
+        self.assertIn("Google Lens\n1. Web match", text)
         self.assertIn("4. [custom] Extra", text)
 
     def test_hides_adult_preview_url(self) -> None:
@@ -146,7 +168,7 @@ class PresentationTests(unittest.TestCase):
                         author="Artist", url="https://pixiv.net/i/123"),
         ])
         text = format_search_response(response)
-        self.assertIn("1. SauceNAO (95.08%) / Google Lens\n「Artwork」/「Artist」", text)
+        self.assertIn("SauceNAO (95.08%) / Google Lens\n「Artwork」/「Artist」", text)
         self.assertIn("Artist", text)
         self.assertIn("SauceNAO (95.08%)", text)
         self.assertNotIn("2. [", text)
@@ -185,7 +207,7 @@ class PresentationTests(unittest.TestCase):
         ])
         text = format_search_response(response)
         self.assertIn("1. SauceNAO / Google Lens\n「Same」", text)
-        self.assertIn("2. Google Lens\nSame", text)
+        self.assertIn("Google Lens\n1. Same", text)
 
     def test_merge_preserves_anime_sections_notices_and_failures(self):
         response = SearchResponse(
@@ -222,8 +244,8 @@ class PresentationTests(unittest.TestCase):
         self.assertIn("SauceNAO (94.39%)", text)
         self.assertEqual(text.count("https://yande.re/post/show/1270151"), 1)
         self.assertIn("https://www.fanbox.cc/@artist/posts/12730887", text)
-        self.assertIn("2. Google Lens\nOther page", text)
-        self.assertIn("3. Google Lens\nRevision", text)
+        self.assertIn("Google Lens\n1. Other page", text)
+        self.assertIn("2. Revision", text)
         self.assertEqual(len(response.matches), 4)
 
     def test_saucenao_cqps_caption_and_link_order(self):
@@ -236,7 +258,7 @@ class PresentationTests(unittest.TestCase):
         )
         text = format_search_response(SearchResponse(matches=[match]))
         self.assertEqual(text, (
-            "1. SauceNAO (95.08%)\n「Artwork」/「Artist」\n"
+            "SauceNAO (95.08%)\n「Artwork」/「Artist」\n"
             "https://www.pixiv.net/artworks/123\n"
             "Author: https://pixiv.net/u/456\nhttps://artist.test/post/789"
         ))
@@ -255,7 +277,7 @@ class PresentationTests(unittest.TestCase):
         match = SourceMatch(provider="saucenao", title="未提供标题",
                             url="https://site.test/art", source_url="https://site.test/art")
         text = format_search_response(SearchResponse(matches=[match]))
-        self.assertEqual(text, "1. SauceNAO\nhttps://site.test/art")
+        self.assertEqual(text, "SauceNAO\nhttps://site.test/art")
 
     def test_saucenao_format_survives_lens_first_order(self):
         matches = [
@@ -273,7 +295,7 @@ class PresentationTests(unittest.TestCase):
         match = SourceMatch(provider="google_lens", title='Artist on X: "Autumn"',
                             site_name="X", url="https://x.com/artist/status/1")
         text = format_search_response(SearchResponse(matches=[match]))
-        self.assertEqual(text, '1. Google Lens\nArtist on X: "Autumn"\n'
+        self.assertEqual(text, 'Google Lens\nArtist on X: "Autumn"\n'
                                'https://x.com/artist/status/1')
         self.assertNotIn("Author:", text)
         self.assertNotIn("%", text)
@@ -290,7 +312,7 @@ class PresentationTests(unittest.TestCase):
         match = SourceMatch(provider="google_lens", title="未提供标题",
                             url="https://site.test/a")
         self.assertEqual(format_search_response(SearchResponse(matches=[match])),
-                         "1. Google Lens\nhttps://site.test/a")
+                         "Google Lens\nhttps://site.test/a")
 
 
 if __name__ == "__main__":

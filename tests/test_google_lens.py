@@ -51,6 +51,11 @@ class QueueHttpClient:
 
 
 class GoogleLensProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_refresh_bypasses_serpapi_cache(self):
+        provider, http = self.make_provider()
+        await provider.search(ImageAsset(url="https://img.test/a", refresh=True), SearchMode.SOURCE)
+        self.assertEqual(http.calls[0][1]["no_cache"], "true")
+
     def make_provider(
         self,
         response: JsonResponse | None = None,

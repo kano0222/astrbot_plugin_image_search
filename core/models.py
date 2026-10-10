@@ -21,6 +21,7 @@ class ImageAsset:
 
     url: str | None = None
     path: Path | None = None
+    refresh: bool = False
 
     def __post_init__(self) -> None:
         """Reject assets without any usable image representation.

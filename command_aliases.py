@@ -35,6 +35,7 @@ def build_channel_aliases(providers: object) -> tuple[dict[str, str], int]:
             name = entry.strip().lower()
             if (
                 not name
+                or name == "-purge"
                 or re.search(r"[\s,，、/=]", name)
                 or name in _CHANNELS
                 or name in _BUILTINS

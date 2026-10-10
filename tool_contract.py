@@ -44,6 +44,8 @@ def tool_description(
             "Allowed modes: " + ", ".join(modes) + ". Default: " + modes[0] + "."
         )
     parts.append(
+        "Search all attached images in one call within the batch limit. "
+        "Set refresh=true only for an explicit request to search again without cache (-purge). "
         "Enabled does not guarantee service availability. Do not claim to use "
         "disabled services or claim searches succeeded before receiving results. "
         "The tool sends formatted results directly to the user. Do not add "
@@ -66,5 +68,6 @@ def completion_instruction(result_count: int) -> str:
         + "请沿用当前会话的人格语气，只回复一句简短反馈，表明你已使用搜图工具。"
         "有结果时简短确认已发出；无结果时说明未找到符合条件的结果，不声称找到了出处。"
         "渠道事实以 attempted_providers 和 result_providers 为准，不把结果归因于用户提到但未返回结果的渠道。"
+        "cached_images 大于零表示使用过缓存，不把缓存结果说成刚刚进行的外部搜索。"
         "不要重复结果、标题、链接或错误详情，不要追问，也不要再次调用搜图工具。"
     )

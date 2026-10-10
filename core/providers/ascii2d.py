@@ -99,10 +99,18 @@ class Ascii2dProvider:
             matches.extend(result)
 
         if len(failed_modes) == 2:
+            if all(isinstance(result, ProviderError) and str(result) == "Ascii2d request timed out"
+                   for result in results):
+                raise ProviderError("Ascii2d request timed out")
             raise ProviderError("Ascii2d result pages both failed")
         notices = []
         if failed_modes:
-            notices.append("Ascii2d 部分搜索模式失败：" + "、".join(failed_modes))
+            notices.append("Ascii2d 部分搜索模式失败：" + "、".join(
+                label + ("（请求超时）" if isinstance(result, ProviderError)
+                         and str(result) == "Ascii2d request timed out" else "")
+                for label, result in zip(("BOVW", "color"), results, strict=True)
+                if isinstance(result, BaseException)
+            ))
         return ProviderOutcome(matches=matches, notices=notices)
 
     async def _fetch_results(
@@ -128,6 +136,8 @@ class Ascii2dProvider:
                 cookies=self._cookies,
                 timeout_seconds=self._timeout_seconds,
             )
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            raise ProviderError("Ascii2d request timed out") from exc
         except ProviderError:
             raise
         except Exception as exc:
@@ -145,6 +155,8 @@ class Ascii2dProvider:
                 cookies=self._cookies,
                 timeout_seconds=self._timeout_seconds,
             )
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            raise ProviderError("Ascii2d request timed out") from exc
         except ProviderError:
             raise
         except Exception as exc:

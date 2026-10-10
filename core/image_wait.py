@@ -15,6 +15,9 @@ class ImageResolution:
 
     url: str | None = None
     error: str | None = None
+    images: tuple[tuple[str | None, str | None], ...] = ()
+    total: int = 0
+    identities: tuple[str | None, ...] = ()
 
 
 class WaitOutcome(Enum):

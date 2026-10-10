@@ -27,8 +27,9 @@
           },
           "max_results": {
             "type": "int",
-            "description": "最大结果数",
-            "default": 5
+            "description": "请求候选数量",
+            "default": 5,
+            "hint": "控制上游返回的候选数量，最终选择一条可靠结果展示。"
           },
           "min_similarity": {
             "type": "int",
@@ -81,7 +82,7 @@
           "max_results": {
             "type": "int",
             "description": "最大结果数",
-            "default": 5
+            "default": 3
           },
           "search_type": {
             "type": "string",
@@ -216,6 +217,18 @@
           "max": 120,
           "step": 5
         }
+      },
+      "daily_search_limit": {
+        "type": "int",
+        "description": "每名用户每日搜索次数",
+        "hint": "0 不限制；管理员免限额。每张图片计一次，缓存命中不计；低相似度计次，全部失败或无候选退回。按 Bot 时区重置。",
+        "default": 30
+      },
+      "max_batch_images": {
+        "type": "int",
+        "description": "每次最多搜索图片数",
+        "hint": "默认 5，必须大于 0；超过上限只处理前面的图片并提示。",
+        "default": 5
       }
     }
   },
@@ -226,7 +239,7 @@
       "merged_forward_threshold": {
         "type": "int",
         "description": "合并推送触发条数",
-        "hint": "按归并后的结果计数，不包含提示或错误：0 不合并；1 始终合并；2–10 超过设定条数才合并。仅支持原生合并转发的平台生效。",
+        "hint": "按普通消息条数计数，同一张图片的结果与提示合为一条：0 不合并；1 始终合并；2–10 达到设定条数即合并。同一张图有两条及以上 Google 匹配时强制合并转发（包括设为 0 时）。仅支持原生合并转发的平台生效。",
         "default": 2,
         "slider": {
           "min": 0,
@@ -248,8 +261,8 @@
       },
       "max_preview_images": {
         "type": "int",
-        "description": "每次搜索最多展示图片数",
-        "hint": "限制图片下载与消息体积，不影响文字结果数量。",
+        "description": "每张输入图片最多展示缩略图数",
+        "hint": "每张输入图片独立计算上限；多余结果保留文字和链接。",
         "default": 6,
         "slider": {
           "min": 1,
@@ -290,6 +303,23 @@
         "type": "int",
         "description": "请求超时秒数",
         "default": 30
+      }
+    }
+  },
+  "cache": {
+    "description": "搜索结果缓存",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用搜索结果缓存",
+        "default": true
+      },
+      "expire_seconds": {
+        "type": "int",
+        "description": "缓存有效秒数",
+        "hint": "默认 172800 秒（48 小时）；“搜图 -purge”或“搜番 -purge”跳过缓存重新搜索。",
+        "default": 172800
       }
     }
   }

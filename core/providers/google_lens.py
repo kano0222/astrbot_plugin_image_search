@@ -110,7 +110,7 @@ class GoogleLensProvider:
             "type": self._search_type,
             "hl": self._language,
             "auto_crop": str(self._auto_crop).lower(),
-            "no_cache": str(self._no_cache).lower(),
+            "no_cache": str(self._no_cache or image.refresh).lower(),
         }
         if self._country:
             params["country"] = self._country

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import math
+
 from collections.abc import Mapping
 from urllib.parse import urlsplit
 
@@ -64,6 +67,8 @@ class TraceMoeProvider:
                 params=params,
                 timeout_seconds=self._timeout_seconds,
             )
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            raise ProviderError("trace.moe request timed out") from exc
         except ProviderError:
             raise
         except Exception as exc:
@@ -94,7 +99,14 @@ class TraceMoeProvider:
             matches.append(match)
             if len(matches) >= self._max_results:
                 break
-        return ProviderOutcome(matches=matches)
+        filtered = any(
+            isinstance(item, Mapping)
+            and (score := self._as_float(item.get("similarity"))) is not None
+            and 0 <= score < self._min_similarity
+            for item in raw_matches
+        )
+        return ProviderOutcome(matches=matches,
+                               filtered_below=self._min_similarity * 100 if filtered and not matches else None)
 
     def _parse_match(self, item: object) -> AnimeMatch | None:
         if not isinstance(item, Mapping):
@@ -141,6 +153,7 @@ class TraceMoeProvider:
         if isinstance(value, bool):
             return None
         try:
-            return float(value)
+            number = float(value)
+            return number if math.isfinite(number) else None
         except (TypeError, ValueError):
             return None

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import asyncio
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import math
 import re
 import time
@@ -31,10 +35,11 @@ from .core.providers import (
     SauceNaoProvider,
     TraceMoeProvider,
 )
-from .image_input import find_public_image_url, find_raw_image_url, first_public_url
+from .image_input import find_public_image_url, find_raw_image_url, first_public_url, image_candidates_from_message, image_cache_identity, image_identities_from_message
 from .command_aliases import build_channel_aliases
-from .simple_requests import parse_simple_request, parse_tool_channels
-from .presentation import count_search_results, format_search_response, provider_label
+from .simple_requests import parse_simple_request, parse_tool_channels, split_search_options
+from .core.search_state import SearchState, cache_key
+from .presentation import BatchResult, build_batch_cards, count_search_results, format_search_response, provider_label
 from .result_delivery import ResultDelivery
 from .tool_contract import available_modes, completion_instruction, tool_description
 from .runtime.http_client import AioHttpJsonClient
@@ -72,6 +77,13 @@ class ImageSearchPlugin(Star):
             command_config.get("image_wait_timeout_seconds"), 60, 10, 120
         )
         self._image_wait = ImageWaitCoordinator(wait_timeout)
+        self._batch_limit = _positive_int(command_config.get("max_batch_images"), 5)
+        self._daily_limit = _bounded_int(command_config.get("daily_search_limit"), 30, 0, 1000000)
+        cache_config = _section(self._config, "cache")
+        self._cache_enabled = _as_bool(cache_config.get("enabled"), True)
+        self._cache_ttl = _positive_int(cache_config.get("expire_seconds"), 172800)
+        self._state = None
+        self._feedback_delay = 3
 
         network = _section(self._config, "network")
         self._timeout_seconds = _positive_float(
@@ -199,12 +211,13 @@ class ImageSearchPlugin(Star):
         if not await self._image_wait.has_pending(key):
             return
 
-        image_url, image_error = await self._get_image_url(event)
-        if image_url is None and image_error is None:
+        resolution = await self._resolve_image_request(event)
+        images = list(resolution.images)
+        if not images:
             return
         delivered = await self._image_wait.deliver(
             key,
-            ImageResolution(url=image_url, error=image_error),
+            resolution,
         )
         if delivered:
             event.stop_event()
@@ -217,8 +230,11 @@ class ImageSearchPlugin(Star):
 
     async def _search_source_channels(
         self, event: AstrMessageEvent, channels: str,
-        *, image_resolution: tuple[str | None, str | None] | None = None,
+        *, image_resolution: ImageResolution | tuple[str | None, str | None] | None = None,
+        refresh: bool = False,
     ):
+        channels, option = split_search_options(channels)
+        refresh = refresh or option
         provider_names, notice = self._resolve_source_channels(channels)
         if notice:
             yield event.plain_result(notice)
@@ -227,6 +243,7 @@ class ImageSearchPlugin(Star):
         async for result in self._run_search(
             event, SearchMode.AUTO, provider_names=provider_names,
             image_resolution=image_resolution,
+            refresh=refresh,
         ):
             yield result
 
@@ -265,9 +282,13 @@ class ImageSearchPlugin(Star):
         return provider_names, notice
 
     @filter.command("搜番")
-    async def search_anime_command(self, event: AstrMessageEvent):
+    async def search_anime_command(self, event: AstrMessageEvent, options: GreedyStr = ""):
         """搜索附带或回复动画截图的番剧与时间点。"""
-        async for result in self._run_search(event, SearchMode.ANIME):
+        remaining, refresh = split_search_options(options)
+        if remaining:
+            yield event.plain_result("搜番仅支持 -purge 参数。")
+            return
+        async for result in self._run_search(event, SearchMode.ANIME, refresh=refresh):
             yield result
 
     @filter.on_llm_request(priority=1)
@@ -288,14 +309,15 @@ class ImageSearchPlugin(Star):
             return
         image_resolution = None
         if request.requires_image:
-            image_resolution = await self._get_image_url(event)
-            if image_resolution == (None, None):
+            image_resolution = await self._resolve_image_request(event)
+            if not image_resolution.images:
                 return
         # Stopping here makes the core hook skip the model and all later hooks;
         # results are sent directly rather than relying on the stopped pipeline.
         event.stop_event()
         async for result in self._search_source_channels(
             event, request.channels, image_resolution=image_resolution,
+            refresh=request.refresh,
         ):
             await event.send(result)
 
@@ -321,6 +343,7 @@ class ImageSearchPlugin(Star):
         modes = available_modes(source_names, anime_names)
         tool = copy(tool)
         tool.description = tool_description(source_names, anime_names)
+        tool.description += f"\nProcess at most {self._batch_limit} images per call."
         if source_names:
             tool.description += (
                 "\nSauceNAO low-similarity follow-up: " + self._service.low_similarity_provider
@@ -364,15 +387,25 @@ class ImageSearchPlugin(Star):
                 tool.parameters["required"] = [
                     name for name in tool.parameters["required"] if name != "channels"
                 ]
+        tool.parameters["properties"]["refresh"] = {
+            "type": "boolean", "default": False,
+            "description": "True only when the user explicitly requests a fresh search without cache (-purge). Applies to every attached image.",
+        }
+        request = parse_simple_request(self._current_text(event), self._channel_aliases)
+        if request is not None and request.refresh:
+            tool.parameters["properties"]["refresh"].update({"enum": [True], "default": True})
         req.func_tool.add_tool(tool)
 
-    def _requested_source_channels(self, event) -> str | None:
+    @staticmethod
+    def _current_text(event) -> str:
         get_messages = getattr(event, "get_messages", None)
         if not callable(get_messages):
-            return None
-        text = "".join(component.text for component in get_messages()
+            return ""
+        return "".join(component.text for component in get_messages()
                        if isinstance(component, Plain))
-        return parse_tool_channels(text, self._channel_aliases)
+
+    def _requested_source_channels(self, event) -> str | None:
+        return parse_tool_channels(self._current_text(event), self._channel_aliases)
 
     @llm_tool("search_image")
     async def tool_search_image(
@@ -380,6 +413,7 @@ class ImageSearchPlugin(Star):
         event: AstrMessageEvent,
         mode: str = "",
         channels: str = "",
+        refresh: bool = False,
     ) -> str:
         """Search an attached or replied image after an explicit user request
 
@@ -393,6 +427,8 @@ class ImageSearchPlugin(Star):
             channels(string): Source channels explicitly requested by the user,
                 separated by spaces or commas. Use an empty string for the default search plan.
                 Only valid for auto/source. Explicit channels never add others.
+            refresh(boolean): Skip cached results only when explicitly requested.
+                All attached images are searched in one call, within the batch limit.
         """
         modes = available_modes(
             self._service.source_provider_names, self._service.anime_provider_names
@@ -412,6 +448,11 @@ class ImageSearchPlugin(Star):
         if not isinstance(channels, str):
             return json.dumps({"success": False, "error": "channels 必须是渠道名称字符串"},
                               ensure_ascii=False)
+        if not isinstance(refresh, bool):
+            return json.dumps({"success": False, "error": "refresh 必须是布尔值"}, ensure_ascii=False)
+        channels, option = split_search_options(channels)
+        request = parse_simple_request(self._current_text(event), self._channel_aliases)
+        refresh = refresh or option or bool(request and request.refresh)
         requested = self._requested_source_channels(event)
         if requested:
             channels = requested
@@ -425,88 +466,354 @@ class ImageSearchPlugin(Star):
                               ensure_ascii=False)
         if notice:
             await event.send(event.plain_result(notice))
-        image_url, image_error = await self._get_image_url(event)
-        if image_url is None:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": image_error or "当前消息或回复消息中没有可搜索的图片",
-                },
-                ensure_ascii=False,
-            )
-
-        request_id, response = await self._search_with_logging(
-            ImageAsset(url=image_url), search_mode, provider_names=provider_names,
-        )
-        self._log_search_failures(response)
-        if not await self._send_rich_result(event, response, request_id):
-            await event.send(event.plain_result(format_search_response(response)))
-            logger.info(f"[ImageSearch] id={request_id} 普通文字结果已发送")
-        result_count = count_search_results(response)
+        resolution = await self._resolve_image_request(event)
+        if not resolution.images:
+            return json.dumps({"success": False, "error": "请在当前消息中附带图片或引用一条带图消息"}, ensure_ascii=False)
+        records = []
+        async for message in self._run_search(
+            event, search_mode, provider_names=provider_names,
+            image_resolution=resolution,
+            refresh=refresh, records=records,
+        ):
+            await event.send(message)
+        result_count = sum(count_search_results(response) for response, _ in records)
         return json.dumps(
             {
                 "success": result_count > 0,
                 "count": result_count,
                 "message_sent": True,
-                "attempted_providers": response.attempted_providers,
-                "result_providers": list(dict.fromkeys(match.provider for match in response.matches)),
+                "processed_images": len(records),
+                "total_images": resolution.total,
+                "cached_images": sum(cached for _, cached in records),
+                "attempted_providers": list(dict.fromkeys(
+                    name for response, cached in records if not cached
+                    for name in response.attempted_providers)),
+                "result_providers": list(dict.fromkeys(
+                    match.provider for response, _ in records for match in response.matches)),
                 "instruction": completion_instruction(result_count),
-            },
-            ensure_ascii=False,
+            }, ensure_ascii=False,
         )
+
+    def _search_state(self) -> SearchState:
+        if self._state is None:
+            path = (StarTools.get_data_dir("astrbot_plugin_image_search") / "search_state.sqlite3"
+                    if self.context is not None else None)
+            self._state = SearchState(path)
+        return self._state
+
+    def _timezone(self):
+        name = (self.context.get_config().get("timezone", "")
+                if self.context is not None else "")
+        if name:
+            try:
+                return ZoneInfo(name)
+            except (ZoneInfoNotFoundError, ValueError, TypeError):
+                logger.warning("[ImageSearch] Bot 时区无效，使用系统时区")
+        return None
+
+    def _day(self) -> str:
+        return datetime.now(self._timezone()).date().isoformat()
+
+    def _quota_user(self, event) -> str | None:
+        sender = getattr(event, "get_sender_id", lambda: "")()
+        if not sender:
+            return None
+        platform = getattr(event, "get_platform_id", lambda: "")()
+        return json.dumps([str(platform), str(sender)], ensure_ascii=False)
+
+    async def _delayed_feedback(self, event, delay: float, sent: list[bool]) -> None:
+        await asyncio.sleep(delay)
+        sent[0] = True
+        try:
+            await event.send(event.plain_result("正在搜索，请稍候。"))
+        except Exception as exc:
+            logger.warning(f"[ImageSearch] 搜索反馈发送失败 ({type(exc).__name__})")
 
     async def _run_search(
-        self,
-        event: AstrMessageEvent,
-        mode: SearchMode,
-        *,
-        provider_names: list[str] | None = None,
-        image_resolution: tuple[str | None, str | None] | None = None,
+        self, event: AstrMessageEvent, mode: SearchMode,
+        *, provider_names: list[str] | None = None,
+        image_resolution: ImageResolution | tuple[str | None, str | None] | None = None,
+        refresh: bool = False, records: list | None = None,
     ):
-        image_url, image_error = (
-            image_resolution if image_resolution is not None
-            else await self._get_image_url(event)
-        )
-        if image_url is None and image_error is not None:
-            yield event.plain_result(image_error)
-            return
-
-        if image_url is None:
+        identities = []
+        if isinstance(image_resolution, ImageResolution):
+            identities = list(image_resolution.identities)
+            images = list(image_resolution.images) or [(image_resolution.url, image_resolution.error)]
+            total = image_resolution.total or len(images)
+        elif image_resolution is not None:
+            images = [] if image_resolution == (None, None) else [image_resolution]
+            total = len(images)
+        else:
+            resolution = await self._resolve_image_request(event)
+            images, total = list(resolution.images), resolution.total
+            identities = list(resolution.identities)
+        if not images:
             key = self._wait_key(event)
             pending = await self._image_wait.create(key)
             if pending is None:
                 yield event.plain_result("当前已在等待图片，请直接发送图片。")
                 return
-
             timeout = int(self._image_wait.timeout_seconds)
             yield event.plain_result(f"请在 {timeout} 秒内发送图片。")
-            wait_result = await self._image_wait.wait(key, pending)
-            if wait_result is WaitOutcome.TIMED_OUT:
+            result = await self._image_wait.wait(key, pending)
+            if result is WaitOutcome.TIMED_OUT:
                 yield event.plain_result("图片等待已超时。")
                 return
-            if wait_result is WaitOutcome.CANCELLED:
+            if result is WaitOutcome.CANCELLED:
                 return
-            if wait_result.error is not None:
-                yield event.plain_result(wait_result.error)
-                return
-            image_url = wait_result.url
-            if image_url is None:
-                yield event.plain_result("获取图片失败，请重新发送。")
-                return
-
-        request_id, response = await self._search_with_logging(
-            ImageAsset(url=image_url), mode, provider_names=provider_names,
+            identities = list(result.identities)
+            images = list(result.images) or [(result.url, result.error)]
+            total = result.total or len(images)
+        if total > self._batch_limit:
+            yield event.plain_result(f"每次最多搜索 {self._batch_limit} 张图片，后 {total-self._batch_limit} 张未处理。")
+        images = images[:self._batch_limit]
+        user = self._quota_user(event)
+        admin = bool(getattr(event, "is_admin", lambda: False)())
+        state = self._search_state()
+        names = (tuple(provider_names) if provider_names is not None else
+                 self._service.anime_provider_names if mode is SearchMode.ANIME else
+                 self._service.source_plan_names)
+        feedback = None
+        feedback_sent = [False]
+        search_elapsed = 0.0
+        batch_results = []
+        batch_id = uuid4().hex[:8]
+        batch_started = time.monotonic()
+        cached_count = 0
+        external_count = 0
+        logger.info(
+            f"[ImageSearch] id={batch_id} 请求开始 mode={mode.value} "
+            f"输入图片={total} 处理上限={self._batch_limit} 待处理={len(images)}"
         )
-        self._log_search_failures(response)
-        if not await self._send_rich_result(event, response, request_id):
-            logger.info(f"[ImageSearch] id={request_id} 结果交由普通文字发送")
-            yield event.plain_result(format_search_response(response))
+        try:
+            for index, (url, error) in enumerate(images, 1):
+                request_id = f"{batch_id}/{index}"
+                if not url:
+                    logger.info(f"[ImageSearch] id={request_id} 图片跳过 原因=图片地址不可用")
+                    batch_results.append(BatchResult(index, message=error or "获取图片失败，请重新发送。"))
+                    continue
+                if not names:
+                    logger.info(f"[ImageSearch] id={request_id} 搜索停止 原因=没有可用渠道")
+                    batch_results.append(BatchResult(index, message="没有可用的搜索服务，请先检查插件配置。"))
+                    break
+                cache_config = {
+                    "providers": self._config.get("providers", {}),
+                    "enrichment": _section(self._config, "output").get("resolve_original_source", True),
+                    "network": _section(self._config, "network"),
+                }
+                identity = identities[index-1] if index <= len(identities) else None
+                key = cache_key(identity or url, mode.value, names, cache_config)
+                condition = cache_key("", mode.value, names, cache_config)[:12]
+                image_identity = hashlib.sha256(url.encode()).hexdigest()[:12]
+                stable_fingerprint = hashlib.sha256(identity.encode()).hexdigest()[:12] if identity else "无"
+                cached = state.get(key, self._cache_ttl) if self._cache_enabled and not refresh else None
+                cache_status = ("跳过:缓存关闭" if not self._cache_enabled else
+                                "跳过:用户重搜" if refresh else
+                                "命中" if cached else "未命中:无有效记录")
+                cache_age = f" 缓存年龄={max(0, time.time()-cached[1]):.0f}s" if cached else ""
+                logger.info(
+                    f"[ImageSearch] id={request_id} 图片处理 URL指纹={image_identity} "
+                    f"缓存身份={identity.split(':', 1)[0] if identity else 'URL'} 标识指纹={stable_fingerprint} "
+                    f"条件指纹={condition} 缓存键={key[:12]} 缓存={cache_status}{cache_age}"
+                )
+                if cached:
+                    cached_count += 1
+                    response, _ = cached
+                    logger.info(
+                        f"[ImageSearch] id={request_id} 缓存读取完成 "
+                        f"结果={count_search_results(response)} 外部搜索=无"
+                    )
+                else:
+                    day = self._day()
+                    reserved = user is not None and not admin
+                    if reserved and not state.reserve(user, day, self._daily_limit):
+                        logger.info(f"[ImageSearch] id={request_id} 搜索停止 原因=每日限额已满")
+                        batch_results.append(BatchResult(index, message=f"今日搜索次数已达上限（{self._daily_limit} 次），剩余图片未处理。"))
+                        break
+                    started = time.monotonic()
+                    external_count += 1
+                    if not feedback_sent[0]:
+                        feedback = asyncio.create_task(self._delayed_feedback(
+                            event, max(0, self._feedback_delay-search_elapsed), feedback_sent))
+                    try:
+                        request_id, response = await self._search_with_logging(
+                            ImageAsset(url=url, refresh=refresh), mode, provider_names=provider_names,
+                            request_id=request_id,
+                        )
+                    except asyncio.CancelledError:
+                        if reserved:
+                            state.refund(user, day)
+                        raise
+                    except Exception as exc:
+                        if reserved:
+                            state.refund(user, day)
+                        response = None
+                        logger.warning(f"[ImageSearch] id={request_id} 单图搜索失败 ({type(exc).__name__})")
+                    finally:
+                        search_elapsed += time.monotonic()-started
+                        if feedback is not None:
+                            if not feedback.done():
+                                feedback.cancel()
+                            await asyncio.gather(feedback, return_exceptions=True)
+                            feedback = None
+                    if response is None:
+                        batch_results.append(BatchResult(index, message="这张图片搜索失败，请稍后重试。"))
+                        continue
+                    if reserved and not (response.matches or response.filtered_providers):
+                        state.refund(user, day)
+                    if self._cache_enabled and response.matches and not response.failed_providers and not response.notices:
+                        state.put(key, response)
+                        storage = "已保存"
+                    else:
+                        storage = ("未保存:缓存关闭" if not self._cache_enabled else
+                                   "未保存:无结果" if not response.matches else
+                                   "未保存:渠道失败" if response.failed_providers else "未保存:含诊断提示")
+                    logger.info(
+                        f"[ImageSearch] id={request_id} 搜索收尾 缓存={storage} "
+                        f"计次={'免计' if not reserved else '计入' if response.matches or response.filtered_providers else '退回'}"
+                    )
+                self._log_search_failures(response)
+                if records is not None:
+                    records.append((response, bool(cached)))
+                batch_results.append(BatchResult(index, response, cached=bool(cached)))
+            if len(images) == 1 and batch_results:
+                item = batch_results[0]
+                if item.response is None:
+                    yield event.plain_result(item.message)
+                elif not await self._send_rich_result(event, item.response, request_id, cached=item.cached):
+                    yield event.plain_result(format_search_response(item.response, cached=item.cached))
+            elif batch_results:
+                logger.info(f"[ImageSearch] id={batch_id} 批量结果发送开始")
+                if not await self._delivery.try_send_batch(event, batch_results, log_context=f"id={batch_id}"):
+                    logger.info(f"[ImageSearch] id={batch_id} 结果交由普通文字发送")
+                    for item in batch_results:
+                        yield event.plain_result("\n\n".join(card.text for card in build_batch_cards([item])))
+                else:
+                    logger.info(f"[ImageSearch] id={batch_id} 结果已直接发送")
+            logger.info(
+                f"[ImageSearch] id={batch_id} 请求完成 搜索完成图片={sum(item.response is not None for item in batch_results)} "
+                f"缓存图片={cached_count} 外部搜索图片={external_count} "
+                f"结果={sum(count_search_results(item.response) for item in batch_results if item.response is not None)} "
+                f"无结果图片={sum(item.response is not None and not item.response.matches for item in batch_results)} "
+                f"跳过或失败图片={sum(item.response is None for item in batch_results)} "
+                f"耗时={time.monotonic()-batch_started:.2f}s"
+            )
+        finally:
+            if feedback is not None:
+                if not feedback.done():
+                    feedback.cancel()
+                await asyncio.gather(feedback, return_exceptions=True)
+
+    async def _resolve_image_request(self, event) -> ImageResolution:
+        identities = []
+        images, total = await self._resolve_images(event, identities=identities)
+        identities = [
+            (identities[index] if index < len(identities) and identities[index]
+             else image_cache_identity({"url": url}))
+            for index, (url, _) in enumerate(images)
+        ]
+        url, error = images[0] if images else (None, None)
+        return ImageResolution(url=url, error=error, images=tuple(images), total=total, identities=tuple(identities))
+
+    async def _resolve_images(self, event, *, identities: list | None = None) -> tuple[list[tuple[str | None, str | None]], int]:
+        get_messages = getattr(event, "get_messages", None)
+        if not callable(get_messages):
+            url, error = await self._get_image_url(event)
+            return ([(url, error)], 1) if url or error else ([], 0)
+        components = get_messages()
+        direct = [c for c in components if isinstance(c, Image)]
+        if direct:
+            # Preserve the existing first-image/raw OneBot priority.
+            first = await self._get_image_url(event)
+            resolved = [first]
+            raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+            segments = raw.get("message") if isinstance(raw, dict) else getattr(raw, "message", None)
+            raw_images = [segment.get("data") if isinstance(segment.get("data"), dict) else {} for segment in segments
+                          if isinstance(segment, dict) and segment.get("type") == "image"] if isinstance(segments, (list, tuple)) else []
+            if identities is not None and len(raw_images) == len(direct):
+                identities.extend(image_cache_identity(data) for data in raw_images[:self._batch_limit])
+            for index, image in enumerate(direct[1:self._batch_limit], 1):
+                raw_url = first_public_url([raw_images[index].get("url"), raw_images[index].get("file")]) if index < len(raw_images) else None
+                url = raw_url or find_public_image_url([image], image_type=Image, reply_type=Reply)
+                url = url or await self._publish_image(image)
+                resolved.append((url, None if url else _FILE_SERVICE_ERROR))
+            return resolved, len(direct)
+        reply = next((c for c in components if isinstance(c, Reply)), None)
+        if reply is not None:
+            quoted = [c for c in (reply.chain or []) if isinstance(c, Image)]
+            public_urls = [find_public_image_url([image], image_type=Image, reply_type=Reply)
+                           for image in quoted]
+            if public_urls and all(public_urls):
+                if identities is not None and self._cache_enabled:
+                    candidates = await self._quoted_image_candidates(event, reply, identities=identities)
+                    if not candidates or len(candidates) != len(quoted):
+                        identities.clear()
+                return [(url, None) for url in public_urls[:self._batch_limit]], len(public_urls)
+            candidates = await self._quoted_image_candidates(event, reply, identities=identities)
+            if candidates:
+                images = []
+                for refs in candidates[:self._batch_limit]:
+                    url = first_public_url(refs)
+                    if not url and refs:
+                        # Resolve one image at a time; never count alternate refs as images.
+                        single = Reply(id="", chain=[Image(file=refs[0])])
+                        try:
+                            resolved = await extract_quoted_message_images(event, single)
+                        except Exception:
+                            resolved = []
+                        url = first_public_url(resolved)
+                        if not url:
+                            url = await self._publish_image(Image(file=resolved[0] if resolved else refs[0]))
+                    images.append((url, None if url else _FILE_SERVICE_ERROR))
+                return images, len(candidates)
+            try:
+                values = await extract_quoted_message_images(event, reply)
+            except Exception as exc:
+                logger.warning(f"[ImageSearch] 引用图片解析失败: {type(exc).__name__}")
+                values = []
+            if len(quoted) == 1:
+                # A single embedded image plus its fetched URL is still one image.
+                url = first_public_url(values)
+                url = url or public_urls[0] or await self._publish_image(quoted[0])
+                return [(url, None if url else _FILE_SERVICE_ERROR)], 1
+            if values and not quoted:
+                images = []
+                for value in values[:self._batch_limit]:
+                    url = first_public_url([value]) or await self._publish_image(Image(file=value))
+                    images.append((url, None if url else _FILE_SERVICE_ERROR))
+                return images, len(values)
+            if quoted:
+                images = []
+                for image in quoted[:self._batch_limit]:
+                    url = find_public_image_url([image], image_type=Image, reply_type=Reply) or await self._publish_image(image)
+                    images.append((url, None if url else _FILE_SERVICE_ERROR))
+                return images, len(quoted)
+        url, error = await self._get_image_url(event)
+        return ([(url, error)], 1) if url or error else ([], 0)
+
+    async def _quoted_image_candidates(self, event, reply, *, identities: list | None = None):
+        api = getattr(getattr(event, "bot", None), "api", None)
+        call_action = getattr(api, "call_action", None)
+        reply_id = str(getattr(reply, "id", "") or "").strip()
+        if not callable(call_action) or not reply_id:
+            return None
+        message_id = int(reply_id) if reply_id.lstrip("-").isdigit() else reply_id
+        try:
+            payload = await asyncio.wait_for(
+                call_action("get_msg", message_id=message_id), timeout=self._timeout_seconds,
+            )
+            if identities is not None:
+                identities.extend(image_identities_from_message(payload))
+            return image_candidates_from_message(payload)
+        except Exception as exc:
+            logger.warning(f"[ImageSearch] 引用消息结构解析失败: {type(exc).__name__}")
+            return None
 
     async def _search_with_logging(
         self, image: ImageAsset, mode: SearchMode,
-        *, provider_names: list[str] | None = None,
+        *, provider_names: list[str] | None = None, request_id: str | None = None,
     ):
-        request_id = uuid4().hex[:8]
+        request_id = request_id or uuid4().hex[:8]
         started = time.monotonic()
         plan = (
             tuple(provider_names) if provider_names is not None else
@@ -530,17 +837,20 @@ class ImageSearchPlugin(Star):
         logger.info(
             f"[ImageSearch] id={request_id} 搜索完成 "
             f"实际渠道={','.join(response.attempted_providers) or '无'} "
-            f"结果={len(response.matches)} "
+            f"结果={count_search_results(response)} 原始条目={len(response.matches)} "
+            f"低相似度渠道={','.join(response.filtered_providers) or '无'} "
             f"失败渠道={','.join(response.failed_providers) or '无'} "
             f"耗时={time.monotonic() - started:.2f}s"
         )
         return request_id, response
 
-    async def _send_rich_result(self, event, response, request_id: str) -> bool:
+    async def _send_rich_result(self, event, response, request_id: str, *, cached: bool = False) -> bool:
         logger.info(f"[ImageSearch] id={request_id} 结果发送开始")
-        sent = await self._delivery.try_send(event, response)
+        sent = await self._delivery.try_send(event, response, log_context=f"id={request_id}", cached=cached)
         if sent:
             logger.info(f"[ImageSearch] id={request_id} 结果已直接发送")
+        else:
+            logger.info(f"[ImageSearch] id={request_id} 结果交由普通文字发送")
         return sent
 
     @staticmethod
@@ -613,6 +923,8 @@ class ImageSearchPlugin(Star):
         )
 
     async def terminate(self) -> None:
+        if self._state is not None:
+            self._state.close()
         await self._image_wait.close()
         await self._delivery.close()
         await self._source_pages.close()

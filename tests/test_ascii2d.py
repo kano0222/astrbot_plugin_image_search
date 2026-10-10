@@ -64,6 +64,13 @@ class FakeWebClient:
 
 
 class Ascii2dProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_timeout_has_explicit_safe_diagnostic(self):
+        from unittest.mock import AsyncMock
+        provider = Ascii2dProvider(AsyncMock(get_text=AsyncMock(side_effect=TimeoutError())))
+        with self.assertRaises(ProviderError) as error:
+            await provider.search(ImageAsset(url="https://img.test/a"), SearchMode.SOURCE)
+        self.assertEqual(safe_failure_reason(error.exception), "请求超时")
+
     async def test_submission_challenge_has_specific_safe_diagnostic(self) -> None:
         client = self.make_client()
         client.post_response = TextResponse(

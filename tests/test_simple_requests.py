@@ -80,3 +80,12 @@ class SimpleRequestTests(unittest.TestCase):
         self.assertIsNone(self.parse("搜一下谷歌"))
         self.assertIsNone(self.parse("搜一下谷歌和SauceNAO"))
         self.assertEqual(self.parse("搜一下 g s").channels, "g s")
+
+    def test_refresh_is_an_exact_independent_option(self):
+        for text in ("搜图 -purge g s", "搜图 g -purge s", "搜图 g s -purge"):
+            request = self.parse(text)
+            self.assertEqual(request.channels, "g s")
+            self.assertTrue(request.refresh)
+        self.assertTrue(self.parse("搜图 -purge").refresh)
+        self.assertIsNone(self.parse("搜图 -purge一下"))
+        self.assertIsNone(self.parse("搜图 重搜"))

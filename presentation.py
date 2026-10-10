@@ -12,43 +12,25 @@ else:
     from core.source_results import group_source_matches, source_link_key
 
 
-def format_search_response(response: SearchResponse) -> str:
+def format_search_response(response: SearchResponse, *, cached: bool = False) -> str:
     """Render grouped source and anime matches without provider-specific coupling."""
-    source_matches = [
-        match for match in response.matches if isinstance(match, SourceMatch)
-    ]
-    anime_matches = [
-        match for match in response.matches if isinstance(match, AnimeMatch)
-    ]
-
+    if response.matches:
+        return "\n\n".join(card.text for card in build_result_cards(response, cached=cached))
     sections: list[str] = []
-    if source_matches:
-        lines = []
-        for index, match in enumerate(group_source_matches(source_matches), start=1):
-            lines.extend(_format_source_match(index, match))
-        sections.append("\n".join(lines))
-
-    if anime_matches:
-        lines = ["动画场景"]
-        for index, match in enumerate(anime_matches, start=1):
-            lines.extend(_format_anime_match(index, match))
-        sections.append("\n".join(lines))
-
-    if not sections:
-        if not response.attempted_providers:
-            sections.append("没有可用的搜索服务，请先检查插件配置。")
-        elif len(response.failed_providers) == len(response.attempted_providers):
-            sections.append("搜索服务暂时不可用，请稍后重试。")
-        else:
-            for name in response.attempted_providers:
-                if name in response.failed_providers:
-                    continue
-                threshold = response.filtered_providers.get(name)
-                sections.append(
-                    f"{provider_label(name)} 候选相似度低于 {threshold:g}%，未展示。"
-                    if threshold is not None else
-                    f"{provider_label(name)} 未找到匹配结果。"
-                )
+    if not response.attempted_providers:
+        sections.append("没有可用的搜索服务，请先检查插件配置。")
+    elif len(response.failed_providers) == len(response.attempted_providers):
+        sections.append("搜索服务暂时不可用，请稍后重试。")
+    else:
+        for name in response.attempted_providers:
+            if name in response.failed_providers:
+                continue
+            threshold = response.filtered_providers.get(name)
+            sections.append(
+                f"{provider_label(name)} 候选相似度低于 {threshold:g}%，未展示。"
+                if threshold is not None else
+                f"{provider_label(name)} 未找到匹配结果。"
+            )
 
     sections.extend(_response_notes(response))
     return "\n\n".join(sections)
@@ -59,6 +41,32 @@ class ResultCard:
     text: str
     preview_urls: tuple[str, ...] = ()
     image_after_lines: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BatchResult:
+    image_index: int
+    response: SearchResponse | None = None
+    message: str = ""
+    cached: bool = False
+
+
+def build_batch_cards(results: list[BatchResult]) -> list[ResultCard]:
+    """Keep input order and group sources only within each input image."""
+    cards = []
+    for result in results:
+        group = (build_result_cards(result.response, cached=result.cached) if result.response is not None
+                 else [ResultCard(result.message)])
+        count = count_search_results(result.response) if result.response is not None else 0
+        prefix = f"第 {result.image_index} 张图片\n" if count != 1 else ""
+        for index, card in enumerate(group):
+            heading = prefix if index == 0 else ""
+            cards.append(ResultCard(
+                heading + card.text, card.preview_urls,
+                card.image_after_lines + 1 if heading and card.image_after_lines is not None
+                else card.image_after_lines,
+            ))
+    return cards
 
 
 def _response_notes(response: SearchResponse) -> list[str]:
@@ -86,14 +94,27 @@ def count_search_results(response: SearchResponse) -> int:
     )
 
 
-def build_result_cards(response: SearchResponse) -> list[ResultCard]:
-    """One node per grouped result; notices/failures remain visible in a final node."""
+def build_result_cards(response: SearchResponse, *, cached: bool = False) -> list[ResultCard]:
+    """Cards retain individual previews; delivery groups them by input image."""
     sources = [m for m in response.matches if isinstance(m, SourceMatch)]
     anime = [m for m in response.matches if isinstance(m, AnimeMatch)]
     cards = []
-    for index, group in enumerate(group_source_matches(sources), start=1):
+    numbered = count_search_results(response) > 1
+    source_groups = group_source_matches(sources)
+    lens_index = 0
+    for index, group in enumerate(source_groups, start=1):
         previews = tuple(dict.fromkeys(m.thumbnail_url for m in group if m.thumbnail_url))
-        lines = _format_source_match(index, group)
+        lines = _format_source_match(index if numbered else None, group)
+        pure_lens = all(m.provider == "google_lens" for m in group)
+        if pure_lens and (numbered or cached):
+            lens_index += 1
+            title = next((m.title for m in group if m.title and m.title != "未提供标题"), "未提供标题")
+            scores = list(dict.fromkeys(m.similarity for m in group if m.similarity is not None))
+            score_text = " / ".join(f"{score:.2f}%" for score in scores)
+            caption = (f"{lens_index}. " if numbered else "") + title + (f" ({score_text})" if score_text else "")
+            header = "Google Lens" + ("[缓存]" if cached else "")
+            lines = ([header] if lens_index == 1 else []) + [caption]
+            lines.extend(_source_links(group, ("url", "author_url", "source_url"), match_first=True))
         image_after = None
         if any(match.provider in {"saucenao", "google_lens"} for match in group):
             image_after = next(
@@ -101,11 +122,14 @@ def build_result_cards(response: SearchResponse) -> list[ResultCard]:
                  if line.startswith(("http://", "https://", "Author: "))),
                 len(lines),
             )
-        cards.append(ResultCard("\n".join(lines), previews, image_after))
+        text = "\n".join(lines)
+        if cached and not pure_lens:
+            text = "[缓存] " + text
+        cards.append(ResultCard(text, previews, image_after))
     for index, match in enumerate(anime, start=1):
         previews = (match.preview_url,) if match.preview_url and not match.adult else ()
         cards.append(ResultCard(
-            "动画场景\n" + "\n".join(_format_anime_match(index, match)), previews,
+            ("[缓存] " if cached else "") + "动画场景\n" + "\n".join(_format_anime_match(index if numbered else None, match)), previews,
         ))
     if not cards:
         return [ResultCard(format_search_response(response))]
@@ -115,7 +139,7 @@ def build_result_cards(response: SearchResponse) -> list[ResultCard]:
     return cards
 
 
-def _format_source_match(index: int, matches: list[SourceMatch]) -> list[str]:
+def _format_source_match(index: int | None, matches: list[SourceMatch]) -> list[str]:
     if any(match.provider in {"saucenao", "google_lens"} for match in matches):
         return _format_compact_match(index, matches)
     providers = list(dict.fromkeys(match.provider for match in matches))
@@ -124,7 +148,7 @@ def _format_source_match(index: int, matches: list[SourceMatch]) -> list[str]:
         (match.title for match in matches if match.title and match.title != "未提供标题"),
         "未提供标题",
     )
-    lines = [f"{index}. [{labels}] {title}"]
+    lines = [(f"{index}. " if index is not None else "") + f"[{labels}] {title}"]
     details = []
     for field in ("site_name", "author"):
         value = next((getattr(match, field) for match in matches if getattr(match, field)), "")
@@ -170,7 +194,7 @@ def _source_links(
     return lines
 
 
-def _format_compact_match(index: int, matches: list[SourceMatch]) -> list[str]:
+def _format_compact_match(index: int | None, matches: list[SourceMatch]) -> list[str]:
     """Compact Lens/CQPS layout, retaining merged channels and independent scores."""
     providers = list(dict.fromkeys(match.provider for match in matches))
     labels = []
@@ -182,7 +206,7 @@ def _format_compact_match(index: int, matches: list[SourceMatch]) -> list[str]:
         score_text = " / ".join(f"{score:.2f}%" for score in scores)
         label = provider_label(provider)
         labels.append(label + (f" ({score_text})" if score_text else ""))
-    lines = [f"{index}. " + " / ".join(labels)]
+    lines = [(f"{index}. " if index is not None else "") + " / ".join(labels)]
     preferred = [match for match in matches if match.provider == "saucenao"]
     preferred += [match for match in matches if match.provider != "saucenao"]
     title = next(
@@ -200,8 +224,8 @@ def _format_compact_match(index: int, matches: list[SourceMatch]) -> list[str]:
     return lines
 
 
-def _format_anime_match(index: int, match: AnimeMatch) -> list[str]:
-    lines = [f"{index}. [{provider_label(match.provider)}] {match.title}"]
+def _format_anime_match(index: int | None, match: AnimeMatch) -> list[str]:
+    lines = [(f"{index}. " if index is not None else "") + f"[{provider_label(match.provider)}] {match.title}"]
     details = []
     if match.episode:
         details.append(f"第 {match.episode} 集")
