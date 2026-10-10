@@ -44,6 +44,175 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
             get_sender_id=lambda: "sender", plugins_name=[],
         )
 
+    async def test_search_mode_exit_phrases_stop_event_and_close_only_own_mode(self):
+        for phrase in ("结束搜图", "退出搜图", "结束", "退出"):
+            owner = self._simple_event("搜图模式")
+            _ = [r async for r in self.plugin.search_mode_command(owner, "")]
+            event = self._simple_event("  " + phrase + "  ")
+            await self.plugin.capture_waiting_image(event)
+            self.assertTrue(event.is_stopped())
+            event.send.assert_awaited_once_with("已退出搜图模式。")
+            self.assertIsNone(self.plugin._search_sessions.get(self.plugin._wait_key(owner)))
+            # Outside the mode these words remain ordinary conversation.
+            outside = self._simple_event(phrase)
+            await self.plugin.capture_waiting_image(outside)
+            self.assertFalse(outside.is_stopped())
+            outside.send.assert_not_awaited()
+
+    async def test_search_mode_exit_does_not_match_other_context_or_sentences(self):
+        owner = self._simple_event("搜图模式")
+        _ = [r async for r in self.plugin.search_mode_command(owner, "")]
+        events = [self._simple_event(text) for text in ("退出登录", "这个故事结束了", "请退出搜图", "退出！")]
+        other = self._simple_event("退出")
+        other.get_sender_id = lambda: "another-user"
+        events.append(other)
+        other = self._simple_event("退出")
+        other.unified_msg_origin = "other:group:session"
+        events.append(other)
+        events.append(self._simple_event("退出", [Image(file="https://site.test/image")]))
+        for event in events:
+            await self.plugin.capture_waiting_image(event)
+            self.assertFalse(event.is_stopped())
+            event.send.assert_not_awaited()
+        self.assertIsNotNone(self.plugin._search_sessions.get(self.plugin._wait_key(owner)))
+
+    async def test_search_mode_exit_works_while_single_image_wait_is_pending(self):
+        owner = self._simple_event("搜图模式")
+        _ = [r async for r in self.plugin.search_mode_command(owner, "")]
+        key = self.plugin._wait_key(owner)
+        await self.plugin._image_wait.create(key)
+        event = self._simple_event("退出")
+        await self.plugin.capture_waiting_image(event)
+        self.assertTrue(event.is_stopped())
+        self.assertIsNone(self.plugin._search_sessions.get(key))
+        self.assertTrue(await self.plugin._image_wait.has_pending(key))
+
+    async def test_search_mode_disabled_and_opening_text_and_logs(self):
+        event = self._simple_event("搜图模式")
+        with patch(self.plugin.__module__ + ".logger.info") as log:
+            replies = [r async for r in self.plugin.search_mode_command(event, "")]
+        self.assertEqual(replies[0], "已进入搜图模式（默认渠道）。\n请发送图片吧！支持批量！60 秒内无动作将自动退出，发送「退出」可提前结束搜图模式。")
+        self.assertIn("动作=已进入", log.call_args.args[0])
+        self.plugin._search_mode_enabled = False
+        replies = [r async for r in self.plugin.search_mode_command(event, "")]
+        self.assertEqual(replies, ["搜图模式未启用。"])
+        image = self._simple_event("", [Image(file="https://site.test/image")])
+        self.plugin._resolve_image_request = AsyncMock()
+        await self.plugin.capture_waiting_image(image)
+        self.plugin._resolve_image_request.assert_not_awaited()
+        self.assertFalse(image.is_stopped())
+
+    async def test_search_mode_deduplicates_batch_and_inflight_but_allows_later_requests(self):
+        import asyncio
+        owner = self._simple_event("搜图模式")
+        _ = [r async for r in self.plugin.search_mode_command(owner, "g")]
+        started, release = asyncio.Event(), asyncio.Event()
+        async def search(*args, **kwargs):
+            started.set()
+            await release.wait()
+            return SearchResponse(matches=[SourceMatch("google_lens", "Art", url="https://site.test/art")])
+        self.plugin._service.search = AsyncMock(side_effect=search)
+        self.plugin._resolve_image_request = AsyncMock(return_value=ImageResolution(
+            images=(("https://site.test/a", None), ("https://site.test/b", None)), total=2,
+            identities=("qq-md5:same", "qq-md5:same")))
+        first = self._simple_event("", [Image(file="https://site.test/a"), Image(file="https://site.test/b")])
+        task = asyncio.create_task(self.plugin.capture_waiting_image(first))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1)
+            self.plugin._resolve_image_request.return_value = ImageResolution(
+                images=(("https://site.test/changed", None),), total=1, identities=("qq-md5:same",))
+            second = self._simple_event("", [Image(file="https://site.test/changed")])
+            await self.plugin.capture_waiting_image(second)
+            self.assertEqual(second.send.await_args.args[0], "该图已在搜索中。")
+            self.assertEqual(self.plugin._service.search.await_count, 1)
+        finally:
+            release.set()
+            await task
+        self.assertEqual(first.send.await_args_list[0].args[0], "已跳过 1 张重复图片。")
+        self.assertFalse(self.plugin._mode_inflight)
+        third = self._simple_event("", [Image(file="https://site.test/changed")])
+        await self.plugin.capture_waiting_image(third)
+        self.assertEqual(self.plugin._service.search.await_count, 2)
+
+    async def test_search_mode_duplicate_reservations_released_on_send_failure(self):
+        owner = self._simple_event("搜图模式")
+        _ = [r async for r in self.plugin.search_mode_command(owner, "")]
+        self.plugin._resolve_image_request = AsyncMock(return_value=ImageResolution(
+            images=(("https://site.test/a", None), ("https://site.test/a", None)), total=2))
+        image = self._simple_event("", [Image(file="https://site.test/a")])
+        image.send.side_effect = RuntimeError("send failed")
+        with self.assertRaises(RuntimeError):
+            await self.plugin.capture_waiting_image(image)
+        self.assertFalse(self.plugin._mode_inflight)
+
+    async def test_search_mode_repeated_images_channels_and_exit(self):
+        opened = self._simple_event("搜图模式 g")
+        messages = [r async for r in self.plugin.search_mode_command(opened, "g")]
+        self.assertIn("Google Lens", messages[0])
+        self.plugin._service.search = AsyncMock(return_value=SearchResponse(matches=[
+            SourceMatch("google_lens", "Artwork", url="https://site.test/art")]))
+        for _ in range(2):
+            image = self._simple_event("", [Image(file="https://site.test/image")])
+            await self.plugin.capture_waiting_image(image)
+            self.assertTrue(image.is_stopped())
+            image.send.assert_awaited_once()
+        self.assertEqual(self.plugin._service.search.await_count, 2)
+        self.assertEqual(self.plugin._service.search.await_args.kwargs["provider_names"], ["google_lens"])
+        messages = [r async for r in self.plugin.search_mode_command(opened, "s")]
+        self.assertIn("已切换", messages[0])
+        self.assertEqual(self.plugin._search_sessions.get(self.plugin._wait_key(opened)).providers, ("saucenao",))
+        messages = [r async for r in self.plugin.exit_search_mode_command(opened)]
+        self.assertIn("已退出", messages[0])
+        image = self._simple_event("", [Image(file="https://site.test/image")])
+        await self.plugin.capture_waiting_image(image)
+        self.assertFalse(image.is_stopped())
+        self.assertEqual(self.plugin._service.search.await_count, 2)
+
+    async def test_search_mode_isolation_and_text_commands_are_not_consumed(self):
+        owner = self._simple_event("搜图模式")
+        _ = [r async for r in self.plugin.search_mode_command(owner, "")]
+        self.plugin._resolve_image_request = AsyncMock()
+        for scope in ("other_user", "other_session", "command", "stopped"):
+            image = self._simple_event("搜番" if scope == "command" else "", [Image(file="https://site.test/i")])
+            if scope == "other_user":
+                image.get_sender_id = lambda: "other"
+            if scope == "other_session":
+                image.unified_msg_origin = "platform:private:test"
+            if scope == "stopped":
+                image.stop_event()
+            await self.plugin.capture_waiting_image(image)
+        self.plugin._resolve_image_request.assert_not_awaited()
+
+    async def test_search_mode_invalid_options_and_pending_wait_preserve_state(self):
+        owner = self._simple_event("搜图模式")
+        key = self.plugin._wait_key(owner)
+        for options in ("nonexistent", "-purge"):
+            _ = [r async for r in self.plugin.search_mode_command(owner, options)]
+            self.assertIsNone(self.plugin._search_sessions.get(key))
+        pending = await self.plugin._image_wait.create(key)
+        replies = [r async for r in self.plugin.search_mode_command(owner, "g")]
+        self.assertIn("等待单次", replies[0])
+        self.assertIsNone(self.plugin._search_sessions.get(key))
+        await self.plugin._image_wait.close()
+        _ = [r async for r in self.plugin.search_mode_command(owner, "g")]
+        session = self.plugin._search_sessions.get(key)
+        _ = [r async for r in self.plugin.search_mode_command(owner, "invalid")]
+        self.assertIs(self.plugin._search_sessions.get(key), session)
+
+    async def test_search_mode_waiting_command_takes_priority_and_close_clears_mode(self):
+        owner = self._simple_event("搜图模式")
+        key = self.plugin._wait_key(owner)
+        _ = [r async for r in self.plugin.search_mode_command(owner, "g")]
+        pending = await self.plugin._image_wait.create(key)
+        image = self._simple_event("", [Image(file="https://site.test/image")])
+        self.plugin._service.search = AsyncMock()
+        await self.plugin.capture_waiting_image(image)
+        resolution = await self.plugin._image_wait.wait(key, pending)
+        self.assertEqual(resolution.url, "https://site.test/image")
+        self.plugin._service.search.assert_not_awaited()
+        await self.plugin._search_sessions.close()
+        self.assertIsNone(self.plugin._search_sessions.get(key))
+
     async def test_simple_request_stops_model_and_shares_command_result(self):
         response = SearchResponse(matches=[SourceMatch(
             provider="google_lens", title="Artwork", url="https://example.org/art"

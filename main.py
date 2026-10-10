@@ -39,6 +39,7 @@ from .image_input import find_public_image_url, find_raw_image_url, first_public
 from .command_aliases import build_channel_aliases
 from .simple_requests import parse_simple_request, parse_tool_channels, split_search_options
 from .core.search_state import SearchState, cache_key
+from .core.search_session import SearchSessions
 from .presentation import BatchResult, build_batch_cards, count_search_results, format_search_response, provider_label
 from .result_delivery import ResultDelivery
 from .tool_contract import available_modes, completion_instruction, tool_description
@@ -77,6 +78,12 @@ class ImageSearchPlugin(Star):
             command_config.get("image_wait_timeout_seconds"), 60, 10, 120
         )
         self._image_wait = ImageWaitCoordinator(wait_timeout)
+        mode_config = _section(self._config, "search_mode")
+        self._search_mode_enabled = _as_bool(mode_config.get("enabled"), True)
+        self._mode_inflight: set[tuple] = set()
+        self._search_sessions = SearchSessions(_bounded_int(
+            mode_config.get("timeout_seconds"), 60, 10, 3600
+        ))
         self._batch_limit = _positive_int(command_config.get("max_batch_images"), 5)
         self._daily_limit = _bounded_int(command_config.get("daily_search_limit"), 30, 0, 1000000)
         cache_config = _section(self._config, "cache")
@@ -208,7 +215,10 @@ class ImageSearchPlugin(Star):
     async def capture_waiting_image(self, event: AstrMessageEvent) -> None:
         """Consume a later image only when this sender has an active wait."""
         key = self._wait_key(event)
+        if await self._capture_search_mode_exit(event, key):
+            return
         if not await self._image_wait.has_pending(key):
+            await self._capture_search_session(event, key)
             return
 
         resolution = await self._resolve_image_request(event)
@@ -221,6 +231,131 @@ class ImageSearchPlugin(Star):
         )
         if delivered:
             event.stop_event()
+
+    def _log_search_mode(self, key, action, **fields):
+        scope = hashlib.sha256(repr(key).encode()).hexdigest()[:12]
+        details = " ".join(f"{name}={value}" for name, value in fields.items())
+        logger.info(f"[ImageSearch] 搜图模式 会话用户={scope} 动作={action} {details}".rstrip())
+
+    def _renew_search_session(self, event, key, providers):
+        async def expired():
+            self._log_search_mode(key, "超时退出")
+            try:
+                await event.send(event.plain_result("搜图模式已超时退出。"))
+            except Exception as exc:
+                logger.warning(f"[ImageSearch] 搜图模式退出提示发送失败 ({type(exc).__name__})")
+        self._search_sessions.start(key, providers, expired)
+
+    @filter.command("搜图模式")
+    async def search_mode_command(self, event: AstrMessageEvent, channels: GreedyStr = ""):
+        """开启连续搜图，或更新本会话的搜索渠道。"""
+        if not self._search_mode_enabled:
+            self._log_search_mode(self._wait_key(event), "拒绝开启", 原因="功能已关闭")
+            yield event.plain_result("搜图模式未启用。")
+            return
+        if "-purge" in channels.split():
+            yield event.plain_result("搜图模式不保留 -purge；刷新请使用“搜图 -purge”。")
+            return
+        providers, notice = self._resolve_source_channels(channels)
+        if notice:
+            yield event.plain_result(notice)
+        if providers == [] or not self._service.source_provider_names:
+            if not notice:
+                yield event.plain_result("没有可用的来源搜索服务，请先检查插件配置。")
+            return
+        key = self._wait_key(event)
+        if await self._image_wait.has_pending(key):
+            yield event.plain_result("当前正在等待单次搜图的图片，请完成后再开启搜图模式。")
+            return
+        previous = self._search_sessions.get(key)
+        selection = tuple(providers) if providers is not None else None
+        action = "已进入" if previous is None else (
+            "已续期" if previous.providers == selection else "已切换"
+        )
+        self._renew_search_session(event, key, selection)
+        label = "默认渠道" if selection is None else "、".join(provider_label(p) for p in selection)
+        self._log_search_mode(key, action, 渠道=label, 空闲秒数=self._search_sessions.timeout)
+        yield event.plain_result(
+            f"{action}搜图模式（{label}）。\n"
+            f"请发送图片吧！支持批量！{self._search_sessions.timeout:g} 秒内无动作将自动退出，"
+            "发送「退出」可提前结束搜图模式。"
+        )
+
+    @filter.command("退出搜图模式")
+    async def exit_search_mode_command(self, event: AstrMessageEvent):
+        key = self._wait_key(event)
+        stopped = self._search_sessions.stop(key)
+        self._log_search_mode(key, "手动退出" if stopped else "未开启")
+        yield event.plain_result("已退出搜图模式。" if stopped else "当前未开启搜图模式。")
+
+    async def _capture_search_mode_exit(self, event, key) -> bool:
+        if (not self._search_mode_enabled
+                or getattr(event, "is_stopped", lambda: False)()
+                or self._search_sessions.get(key) is None):
+            return False
+        components = event.get_messages()
+        if not components or not all(isinstance(item, Plain) for item in components):
+            return False
+        text = "".join(item.text for item in components).strip()
+        if text not in {"结束搜图", "退出搜图", "结束", "退出"}:
+            return False
+        event.stop_event()
+        async for result in self.exit_search_mode_command(event):
+            await event.send(result)
+        return True
+
+    async def _capture_search_session(self, event, key):
+        if not self._search_mode_enabled or getattr(event, "is_stopped", lambda: False)():
+            return
+        session = self._search_sessions.get(key)
+        if session is None:
+            return
+        components = event.get_messages()
+        if (not any(isinstance(item, Image) for item in components)
+                or any(not isinstance(item, (Image, Plain)) for item in components)
+                or any(isinstance(item, Plain) and item.text.strip() for item in components)):
+            return
+        # Claim the message before resolving images or yielding to the search service.
+        event.stop_event()
+        self._renew_search_session(event, key, session.providers)
+        self._log_search_mode(key, "图片续期", 空闲秒数=self._search_sessions.timeout)
+        resolution = await self._resolve_image_request(event)
+        if not resolution.images:
+            await event.send(event.plain_result("无法读取图片，请重新发送。"))
+            return
+        owned = set()
+        images, identities = [], []
+        duplicate_count = 0
+        for index, (url, error) in enumerate(resolution.images):
+            identity = resolution.identities[index] if index < len(resolution.identities) else None
+            token = (key, tuple(sorted(session.providers or ())), identity or url)
+            if url and token in self._mode_inflight:
+                duplicate_count += 1
+                continue
+            if url:
+                self._mode_inflight.add(token)
+                owned.add(token)
+            images.append((url, error))
+            identities.append(identity)
+        self._log_search_mode(key, "图片接收", 输入图片=resolution.total,
+                              重复跳过=duplicate_count, 待处理=len(images))
+        try:
+            if duplicate_count:
+                message = ("该图已在搜索中。" if not images and resolution.total == 1 else
+                           f"已跳过 {duplicate_count} 张重复图片。")
+                await event.send(event.plain_result(message))
+            if not images:
+                return
+            filtered = ImageResolution(images=tuple(images), total=resolution.total,
+                                       identities=tuple(identities))
+            async for result in self._run_search(
+                event, SearchMode.AUTO,
+                provider_names=list(session.providers) if session.providers is not None else None,
+                image_resolution=filtered,
+            ):
+                await event.send(result)
+        finally:
+            self._mode_inflight.difference_update(owned)
 
     @filter.command("搜图")
     async def search_image_command(self, event: AstrMessageEvent, channels: GreedyStr):
@@ -923,6 +1058,7 @@ class ImageSearchPlugin(Star):
         )
 
     async def terminate(self) -> None:
+        await self._search_sessions.close()
         if self._state is not None:
             self._state.close()
         await self._image_wait.close()

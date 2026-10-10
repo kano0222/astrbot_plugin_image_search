@@ -232,6 +232,24 @@
       }
     }
   },
+  "search_mode": {
+    "description": "搜图模式",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用搜图模式",
+        "hint": "允许用户开启连续搜图；关闭后普通搜图命令仍可使用。",
+        "default": true
+      },
+      "timeout_seconds": {
+        "type": "int",
+        "description": "空闲退出秒数",
+        "hint": "默认 60，范围 10–3600；每次直接发图续期，群聊和私聊均生效。",
+        "default": 60
+      }
+    }
+  },
   "output": {
     "description": "结果展示",
     "type": "object",
