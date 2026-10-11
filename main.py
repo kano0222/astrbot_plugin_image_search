@@ -37,10 +37,10 @@ from .core.providers import (
 )
 from .image_input import find_public_image_url, find_raw_image_url, first_public_url, image_candidates_from_message, image_cache_identity, image_identities_from_message
 from .command_aliases import build_channel_aliases
-from .simple_requests import parse_simple_request, parse_tool_channels, split_search_options
+from .simple_requests import parse_simple_request, parse_tool_channels, split_search_options, is_search_help_request
 from .core.search_state import SearchState, cache_key
 from .core.search_session import SearchSessions
-from .presentation import BatchResult, build_batch_cards, count_search_results, format_search_response, provider_label
+from .presentation import BatchResult, build_batch_cards, count_search_results, format_search_response, format_search_help, provider_label
 from .result_delivery import ResultDelivery
 from .tool_contract import available_modes, completion_instruction, tool_description
 from .runtime.http_client import AioHttpJsonClient
@@ -357,6 +357,16 @@ class ImageSearchPlugin(Star):
         finally:
             self._mode_inflight.difference_update(owned)
 
+    @filter.command("搜图帮助")
+    async def search_help_command(self, event: AstrMessageEvent):
+        """查看当前可用的搜图命令与渠道。"""
+        yield event.plain_result(format_search_help(
+            self._service.source_provider_names, self._service.anime_provider_names,
+            self._channel_aliases, batch_limit=self._batch_limit,
+            cache_enabled=self._cache_enabled, search_mode_enabled=self._search_mode_enabled,
+            mode_timeout=self._search_sessions.timeout,
+        ))
+
     @filter.command("搜图")
     async def search_image_command(self, event: AstrMessageEvent, channels: GreedyStr):
         """搜索图片；指定渠道时只搜索所选渠道，不自动补搜。"""
@@ -439,6 +449,11 @@ class ImageSearchPlugin(Star):
             component.text for component in event.get_messages()
             if isinstance(component, Plain)
         )
+        if is_search_help_request(text):
+            event.stop_event()
+            async for result in self.search_help_command(event):
+                await event.send(result)
+            return
         request = parse_simple_request(text, self._channel_aliases)
         if request is None:
             return

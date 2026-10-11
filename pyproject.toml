@@ -1,6 +1,6 @@
 [project]
 name = "astrbot-plugin-image-search"
-version = "0.1.19"
+version = "0.1.20"
 description = "Unified image source and anime screenshot search for AstrBot"
 requires-python = ">=3.10"
 

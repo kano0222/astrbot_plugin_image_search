@@ -3,10 +3,21 @@ from __future__ import annotations
 import unittest
 
 from core.models import AnimeMatch, SearchResponse, SourceMatch
-from presentation import BatchResult, build_batch_cards, build_result_cards, format_search_response
+from presentation import BatchResult, build_batch_cards, build_result_cards, format_search_response, format_search_help
 
 
 class PresentationTests(unittest.TestCase):
+    def test_help_anime_only_and_no_services(self):
+        options = dict(batch_limit=3, cache_enabled=True, search_mode_enabled=True, mode_timeout=90)
+        text = format_search_help((), ("trace_moe",), {}, **options)
+        self.assertIn("/搜番 -purge", text)
+        self.assertIn("最多 3 张", text)
+        self.assertNotIn("/搜图：", text)
+        self.assertIn("搜图模式不可用：没有可用的来源搜索渠道。", text)
+        self.assertNotIn("搜图模式已关闭", text)
+        self.assertEqual(format_search_help((), (), {}, **options),
+                         "搜图帮助\n当前没有可用的搜索服务，请联系管理员配置。")
+
     def test_cached_cards_and_plain_fallback_mark_each_match_without_mutating_response(self):
         response = SearchResponse(matches=[SourceMatch("google_lens", "First", url="https://site.test/1"),
                                            SourceMatch("google_lens", "Second", url="https://site.test/2")])

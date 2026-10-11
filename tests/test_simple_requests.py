@@ -1,10 +1,17 @@
 import unittest
 
 from command_aliases import build_channel_aliases
-from simple_requests import parse_simple_request, parse_tool_channels
+from simple_requests import parse_simple_request, parse_tool_channels, is_search_help_request
 
 
 class SimpleRequestTests(unittest.TestCase):
+    def test_help_requests_are_whole_message_usage_questions(self):
+        for text in ("怎么搜图", "如何搜图？", "请问搜图怎么用", "搜图帮助", "怎么搜番", "搜番怎么用"):
+            self.assertTrue(is_search_help_request(text), text)
+        for text in ("不要搜图帮助", "他问怎么搜图", "怎么搜图然后帮我搜这张", "怎么搜图\n顺便讲故事",
+                     "“怎么搜图”", "/搜图帮助", "搜图原理是什么", ""):
+            self.assertFalse(is_search_help_request(text), text)
+
     def setUp(self):
         self.aliases, _ = build_channel_aliases({"saucenao": {"aliases": ["s", "酱"]}})
 

@@ -20,6 +20,17 @@ class SimpleSearchRequest:
     refresh: bool = False
 
 
+def is_search_help_request(text: str) -> bool:
+    """Match explicit usage questions without interpreting arbitrary conversation."""
+    if not isinstance(text, str) or len(text) > 100:
+        return False
+    text = text.strip().rstrip(_END).strip()
+    return re.fullmatch(
+        r"(?:请问)?(?:怎么搜图|如何搜图|怎么搜番|如何搜番|搜图怎么用|搜番怎么用|搜图帮助)",
+        text,
+    ) is not None
+
+
 def split_search_options(text: str) -> tuple[str, bool]:
     tokens = re.split(r"[\s,，、]+", text.strip()) if text.strip() else []
     if "-purge" not in tokens:

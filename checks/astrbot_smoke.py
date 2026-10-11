@@ -44,6 +44,58 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
             get_sender_id=lambda: "sender", plugins_name=[],
         )
 
+    async def test_natural_help_uses_command_output_without_resolving_images(self):
+        self.plugin._service.search = AsyncMock()
+        self.plugin._resolve_image_request = AsyncMock()
+        expected = [r async for r in self.plugin.search_help_command(self._simple_event("搜图帮助"))][0]
+        for phrase in ("怎么搜图", "请问如何搜图？", "搜图帮助", "怎么搜番"):
+            event = self._simple_event(phrase, [Image(file="https://site.test/image")])
+            await self.plugin.route_simple_search(event, None)
+            self.assertTrue(event.is_stopped())
+            event.send.assert_awaited_once_with(expected)
+        self.plugin._service.search.assert_not_awaited()
+        self.plugin._resolve_image_request.assert_not_awaited()
+        self.assertIsNone(self.plugin._state)
+
+    async def test_natural_help_respects_routing_toggle_and_does_not_match_discussion(self):
+        for phrase in ("不要搜图帮助", "他说怎么搜图", "怎么搜图，然后查一下这张"):
+            event = self._simple_event(phrase)
+            await self.plugin.route_simple_search(event, None)
+            self.assertFalse(event.is_stopped())
+            event.send.assert_not_awaited()
+        self.plugin._simple_search_enabled = False
+        event = self._simple_event("怎么搜图")
+        await self.plugin.route_simple_search(event, None)
+        self.assertFalse(event.is_stopped())
+        event.send.assert_not_awaited()
+
+    async def test_search_help_uses_active_services_and_does_not_search(self):
+        config = dict(self.plugin._config)
+        config["providers"] = {**config["providers"], "ascii2d": {"enabled": False}}
+        await self.plugin.terminate()
+        self.plugin = ImageSearchPlugin(None, config)
+        self.plugin._service.search = AsyncMock()
+        self.plugin._resolve_image_request = AsyncMock()
+        replies = [r async for r in self.plugin.search_help_command(self._simple_event("搜图帮助"))]
+        self.assertEqual(len(replies), 1)
+        text = replies[0]
+        self.assertIn("SauceNAO", text)
+        self.assertIn("酱", text)
+        self.assertIn("Google Lens", text)
+        self.assertNotIn("Ascii2d", text)
+        self.assertNotIn("-purge", text)
+        self.assertNotIn("test-serp-key", text)
+        self.assertIn("/搜图模式", text)
+        self.plugin._search_mode_enabled = False
+        self.plugin._cache_enabled = True
+        text = [r async for r in self.plugin.search_help_command(self._simple_event("搜图帮助"))][0]
+        self.assertIn("搜图模式已关闭。", text)
+        self.assertNotIn("/搜图模式", text)
+        self.assertIn("-purge", text)
+        self.plugin._service.search.assert_not_awaited()
+        self.plugin._resolve_image_request.assert_not_awaited()
+        self.assertIsNone(self.plugin._state)
+
     async def test_search_mode_exit_phrases_stop_event_and_close_only_own_mode(self):
         for phrase in ("结束搜图", "退出搜图", "结束", "退出"):
             owner = self._simple_event("搜图模式")

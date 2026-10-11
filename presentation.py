@@ -12,6 +12,43 @@ else:
     from core.source_results import group_source_matches, source_link_key
 
 
+def format_search_help(
+    source_names: tuple[str, ...], anime_names: tuple[str, ...],
+    aliases: dict[str, str], *, batch_limit: int, cache_enabled: bool,
+    search_mode_enabled: bool, mode_timeout: float,
+) -> str:
+    """Describe only commands backed by currently available services."""
+    lines = ["搜图帮助"]
+    if not source_names and not anime_names:
+        return "搜图帮助\n当前没有可用的搜索服务，请联系管理员配置。"
+    if source_names:
+        lines.append("/搜图：搜索图片出处，可附图或引用图片。")
+        for name in source_names:
+            names = sorted((alias for alias, target in aliases.items() if target == name),
+                           key=lambda alias: (len(alias), alias))
+            lines.append(f"{provider_label(name)}：" + "、".join(names or [name]))
+        first = source_names[0]
+        example = min((alias for alias, target in aliases.items() if target == first),
+                      key=lambda alias: (len(alias), alias), default=first)
+        lines.append(f"指定渠道：/搜图 {example}；多个渠道用空格分隔。")
+    if anime_names:
+        lines.append("/搜番：查找动画名称、集数和时间点。")
+    lines.append(f"支持一次多图，最多 {batch_limit} 张；也可先发命令，再发送图片。")
+    if cache_enabled:
+        command = "搜图" if source_names else "搜番"
+        lines.append(f"刷新缓存：/{command} -purge；成功后更新缓存。")
+    if search_mode_enabled and source_names:
+        lines.append(
+            f"连续搜图：/搜图模式，可附渠道；直接发图，{mode_timeout:g} 秒无动作自动退出。\n"
+            "模式内发送「退出」结束，也可使用 /退出搜图模式。"
+        )
+    elif not search_mode_enabled:
+        lines.append("搜图模式已关闭。")
+    else:
+        lines.append("搜图模式不可用：没有可用的来源搜索渠道。")
+    return "\n".join(lines)
+
+
 def format_search_response(response: SearchResponse, *, cached: bool = False) -> str:
     """Render grouped source and anime matches without provider-specific coupling."""
     if response.matches:

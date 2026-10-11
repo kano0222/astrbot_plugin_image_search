@@ -3,6 +3,8 @@
 An AstrBot plugin for finding the origin of images, illustrations, and anime
 screenshots.
 
+发送 `/搜图帮助` 查看当前可用渠道、别名、批量上限、缓存刷新和连续搜图用法。帮助直接生成，不调用 LLM 或搜索服务；关闭的功能不展示入口，搜图模式关闭或缺少来源渠道时说明原因。命令前缀遵循 AstrBot 设置。启用“简单自然语言直达搜图”时，整句“怎么搜图”“如何搜图”“搜图怎么用”“搜图帮助”及对应搜番问法会在模型调用前返回相同帮助；支持“请问”前缀和句尾标点，遵循会话唤醒条件，不调用 LLM、不解析图片、不计次数。
+
 ## Status
 
 The first runnable AstrBot vertical slice is implemented:
