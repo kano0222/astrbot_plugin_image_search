@@ -7,14 +7,6 @@
         "description": "SauceNAO",
         "type": "object",
         "items": {
-          "aliases": {
-            "type": "list",
-            "description": "渠道别名",
-            "hint": "每项一个别名，直接填写名称，无需等号。不可覆盖内置名称，别名不会启用渠道。",
-            "default": [
-              "s"
-            ]
-          },
           "enabled": {
             "type": "bool",
             "description": "启用 SauceNAO",
@@ -23,13 +15,16 @@
           "api_key": {
             "type": "string",
             "description": "API Key",
-            "default": ""
+            "default": "",
+            "secret": true
           },
-          "max_results": {
-            "type": "int",
-            "description": "请求候选数量",
-            "default": 5,
-            "hint": "控制上游返回的候选数量，最终选择一条可靠结果展示。"
+          "aliases": {
+            "type": "list",
+            "description": "渠道别名",
+            "hint": "每项一个别名，直接填写名称，无需等号。不可覆盖内置名称，别名不会启用渠道。",
+            "default": [
+              "s"
+            ]
           },
           "min_similarity": {
             "type": "int",
@@ -40,18 +35,29 @@
               "max": 100,
               "step": 1
             },
-            "hint": "低于此值的候选不展示，默认搜索按所选渠道补搜；达到此值才展示。"
+            "hint": "低于此值的候选不展示；默认搜图可按补搜设置尝试其他渠道。"
           },
           "low_similarity_provider": {
             "type": "string",
             "description": "SauceNAO 相似度过低时自动使用",
-            "hint": "低于最低相似度时，仅补搜所选已启用渠道；off 不补搜。显式指定渠道不追加其他渠道。无候选或接口失败仍按已有备用搜索策略处理。",
+            "hint": "相似度不足时使用所选已启用渠道补搜；不补搜则结束。指定渠道搜索时不追加渠道。",
             "options": [
               "off",
               "Ascii2d",
               "google"
             ],
-            "default": "off"
+            "default": "off",
+            "labels": [
+              "不补搜",
+              "Ascii2d",
+              "Google Lens"
+            ]
+          },
+          "max_results": {
+            "type": "int",
+            "description": "请求候选数量",
+            "default": 5,
+            "hint": "控制上游返回的候选数量，最终选择一条可靠结果展示。"
           }
         }
       },
@@ -59,15 +65,6 @@
         "description": "Google Lens",
         "type": "object",
         "items": {
-          "aliases": {
-            "type": "list",
-            "description": "渠道别名",
-            "hint": "每项一个别名，直接填写名称，无需等号。不可覆盖内置名称，别名不会启用渠道。",
-            "default": [
-              "g",
-              "谷歌"
-            ]
-          },
           "enabled": {
             "type": "bool",
             "description": "启用 Google Lens",
@@ -76,8 +73,18 @@
           "serpapi_keys": {
             "type": "list",
             "description": "SerpAPI Keys",
-            "hint": "支持多个 Key 轮换和额度拒绝时切换。",
-            "default": []
+            "hint": "支持多个 Key 轮换；认证或额度被拒绝时尝试下一个。",
+            "default": [],
+            "secret": true
+          },
+          "aliases": {
+            "type": "list",
+            "description": "渠道别名",
+            "hint": "每项一个别名，直接填写名称，无需等号。不可覆盖内置名称，别名不会启用渠道。",
+            "default": [
+              "g",
+              "谷歌"
+            ]
           },
           "max_results": {
             "type": "int",
@@ -92,7 +99,28 @@
               "visual_matches",
               "exact_matches"
             ],
-            "default": "all"
+            "default": "all",
+            "labels": [
+              "默认搜索",
+              "相似图片",
+              "完全匹配"
+            ]
+          },
+          "safe_search": {
+            "type": "string",
+            "description": "安全搜索",
+            "hint": "服务默认：使用上游设置；关闭或开启：明确指定是否过滤。",
+            "options": [
+              "default",
+              "off",
+              "active"
+            ],
+            "default": "off",
+            "labels": [
+              "服务默认",
+              "关闭",
+              "开启"
+            ]
           },
           "language": {
             "type": "string",
@@ -102,28 +130,20 @@
           "country": {
             "type": "string",
             "description": "国家或地区代码",
-            "default": ""
-          },
-          "safe_search": {
-            "type": "string",
-            "description": "安全搜索",
-            "hint": "default：使用服务端默认值（不发送 safe）；off：明确关闭（safe=off）；active：开启（safe=active）。",
-            "options": [
-              "default",
-              "off",
-              "active"
-            ],
-            "default": "off"
+            "default": "",
+            "hint": "留空使用服务默认地区；可填写两位国家代码，如 jp、us。"
           },
           "auto_crop": {
             "type": "bool",
             "description": "自动裁剪识别区域",
-            "default": false
+            "default": false,
+            "hint": "自动识别并裁剪重点区域，可能影响整图匹配。"
           },
           "no_cache": {
             "type": "bool",
             "description": "跳过 SerpAPI 缓存",
-            "default": false
+            "default": false,
+            "hint": "跳过 SerpAPI 缓存，不影响插件本地缓存；需要同时刷新两层缓存时使用 -purge。"
           }
         }
       },
@@ -131,6 +151,11 @@
         "description": "Ascii2d",
         "type": "object",
         "items": {
+          "enabled": {
+            "type": "bool",
+            "description": "启用 Ascii2d",
+            "default": true
+          },
           "aliases": {
             "type": "list",
             "description": "渠道别名",
@@ -139,22 +164,19 @@
               "a"
             ]
           },
-          "enabled": {
-            "type": "bool",
-            "description": "启用 Ascii2d",
-            "default": true
-          },
           "session_id": {
             "type": "string",
             "description": "_session_id Cookie",
-            "hint": "网站要求会话时填写。",
-            "default": ""
+            "hint": "网站要求会话时填写对应 Cookie。",
+            "default": "",
+            "secret": true
           },
           "cf_clearance": {
             "type": "string",
             "description": "cf_clearance Cookie",
-            "hint": "网站要求验证时填写；Cookie 不保证能解除访问限制。",
-            "default": ""
+            "hint": "需要 Cloudflare 验证时填写；可能过期，不保证解除访问限制。",
+            "default": "",
+            "secret": true
           }
         }
       },
@@ -171,12 +193,8 @@
             "type": "string",
             "description": "Token",
             "hint": "可选，留空使用匿名额度。",
-            "default": ""
-          },
-          "max_results": {
-            "type": "int",
-            "description": "最大结果数",
-            "default": 3
+            "default": "",
+            "secret": true
           },
           "min_similarity": {
             "type": "int",
@@ -187,6 +205,11 @@
               "max": 100,
               "step": 1
             }
+          },
+          "max_results": {
+            "type": "int",
+            "description": "最大结果数",
+            "default": 3
           },
           "cut_borders": {
             "type": "bool",
@@ -203,32 +226,32 @@
     "items": {
       "simple_natural_language": {
         "type": "bool",
-        "description": "简单自然语言直达搜图",
-        "hint": "在模型调用前接管整句明确请求，如“帮我找下出处”；“搜一下”需有图片。“怎么搜图”“搜图怎么用”等整句问法直接返回帮助。支持句尾渠道别名，遵守既有会话唤醒和群聊门控，不依赖 LLM 工具开关。",
+        "description": "自然语言直接搜图",
+        "hint": "明确搜图请求和使用方法问句直接处理，不调用 LLM；“搜一下”需附图，遵守会话唤醒条件。",
         "default": true
+      },
+      "max_batch_images": {
+        "type": "int",
+        "description": "每次最多搜索图片数",
+        "hint": "超出上限只处理前面的图片，并提示未处理数量。",
+        "default": 5
+      },
+      "daily_search_limit": {
+        "type": "int",
+        "description": "每名用户每日搜索次数",
+        "hint": "0 不限制，管理员免限。每图一次，低相似度计次；缓存命中、全部失败或无候选不计。按 Bot 时区每日重置。",
+        "default": 30
       },
       "image_wait_timeout_seconds": {
         "type": "int",
         "description": "无图命令等待秒数",
-        "hint": "单独发送搜图或搜番后，等待同一会话同一发送者发送图片。",
+        "hint": "发送不带图片的搜图命令后，等待图片的最长时间。",
         "default": 60,
         "slider": {
           "min": 10,
           "max": 120,
           "step": 5
         }
-      },
-      "daily_search_limit": {
-        "type": "int",
-        "description": "每名用户每日搜索次数",
-        "hint": "0 不限制；管理员免限额。每张图片计一次，缓存命中不计；低相似度计次，全部失败或无候选退回。按 Bot 时区重置。",
-        "default": 30
-      },
-      "max_batch_images": {
-        "type": "int",
-        "description": "每次最多搜索图片数",
-        "hint": "默认 5，必须大于 0；超过上限只处理前面的图片并提示。",
-        "default": 5
       }
     }
   },
@@ -245,8 +268,20 @@
       "timeout_seconds": {
         "type": "int",
         "description": "空闲退出秒数",
-        "hint": "默认 60，范围 10–3600；每次直接发图续期，群聊和私聊均生效。",
+        "hint": "范围 10–3600 秒；发图或重新开启、切换模式时续期，群聊和私聊均生效。",
         "default": 60
+      }
+    }
+  },
+  "llm": {
+    "description": "LLM 工具",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用 LLM 搜图工具",
+        "hint": "允许模型在明确搜图请求中调用搜索工具；不影响命令和自然语言直达。",
+        "default": true
       }
     }
   },
@@ -257,7 +292,7 @@
       "merged_forward_threshold": {
         "type": "int",
         "description": "合并推送触发条数",
-        "hint": "按普通消息条数计数，同一张图片的结果与提示合为一条：0 不合并；1 始终合并；2–10 达到设定条数即合并。同一张图有两条及以上 Google 匹配时强制合并转发（包括设为 0 时）。仅支持原生合并转发的平台生效。",
+        "hint": "按普通消息数：0 不合并，1 始终合并，2–10 达到即合并。Google 同图多结果始终合并转发（含设为 0 时）；仅支持的平台生效。",
         "default": 2,
         "slider": {
           "min": 0,
@@ -265,16 +300,10 @@
           "step": 1
         }
       },
-      "resolve_original_source": {
-        "type": "bool",
-        "description": "补全转载页的原始出处",
-        "hint": "仅解析 Danbooru、Gelbooru、Konachan、Yande.re 作品页明确的来源字段；额外等待最多 6 秒，失败保留转载页，不覆盖已有来源。",
-        "default": true
-      },
       "show_thumbnails": {
         "type": "bool",
         "description": "显示结果缩略图",
-        "hint": "仅下载搜索服务提供的缩略图；加载失败保留文字。不下载来源原图。",
+        "hint": "仅使用搜索服务提供的缩略图，不下载原图；加载失败保留文字。",
         "default": true
       },
       "max_preview_images": {
@@ -287,40 +316,12 @@
           "max": 20,
           "step": 1
         }
-      }
-    }
-  },
-  "llm": {
-    "description": "LLM 工具",
-    "type": "object",
-    "items": {
-      "enabled": {
+      },
+      "resolve_original_source": {
         "type": "bool",
-        "description": "启用llm搜图工具调用",
-        "hint": "仅供明确的搜图或搜番请求调用；命令功能不受此开关影响。",
+        "description": "补全转载页的原始出处",
+        "hint": "从支持的图站作品页提取原始出处；额外等待最多 6 秒，失败保留现有链接。",
         "default": true
-      }
-    }
-  },
-  "network": {
-    "description": "网络",
-    "type": "object",
-    "items": {
-      "proxy_url": {
-        "type": "string",
-        "description": "HTTP 代理",
-        "hint": "例如 http://127.0.0.1:7890；留空表示直连。",
-        "default": ""
-      },
-      "user_agent": {
-        "type": "string",
-        "description": "User-Agent",
-        "default": "AstrBot Image Search/0.1"
-      },
-      "timeout_seconds": {
-        "type": "int",
-        "description": "请求超时秒数",
-        "default": 30
       }
     }
   },
@@ -336,8 +337,30 @@
       "expire_seconds": {
         "type": "int",
         "description": "缓存有效秒数",
-        "hint": "默认 172800 秒（48 小时）；“搜图 -purge”或“搜番 -purge”跳过缓存重新搜索。",
+        "hint": "默认 172800 秒（48 小时）；-purge 跳过本地缓存重新搜索，并跳过 Google 的 SerpAPI 缓存。",
         "default": 172800
+      }
+    }
+  },
+  "network": {
+    "description": "网络",
+    "type": "object",
+    "items": {
+      "proxy_url": {
+        "type": "string",
+        "description": "HTTP 代理",
+        "hint": "留空直连；Docker 中 127.0.0.1 指容器自身，不是宿主机。",
+        "default": ""
+      },
+      "timeout_seconds": {
+        "type": "int",
+        "description": "请求超时秒数",
+        "default": 30
+      },
+      "user_agent": {
+        "type": "string",
+        "description": "User-Agent",
+        "default": "AstrBot Image Search/0.1"
       }
     }
   }

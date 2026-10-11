@@ -1,37 +1,30 @@
 # astrbot_plugin_image_search
 
-An AstrBot plugin for finding the origin of images, illustrations, and anime
-screenshots.
+简体中文 | [English](README_EN.md)
 
-发送 `/搜图帮助` 查看当前可用渠道、别名、批量上限、缓存刷新和连续搜图用法。帮助直接生成，不调用 LLM 或搜索服务；关闭的功能不展示入口，搜图模式关闭或缺少来源渠道时说明原因。命令前缀遵循 AstrBot 设置。启用“简单自然语言直达搜图”时，整句“怎么搜图”“如何搜图”“搜图怎么用”“搜图帮助”及对应搜番问法会在模型调用前返回相同帮助；支持“请问”前缀和句尾标点，遵循会话唤醒条件，不调用 LLM、不解析图片、不计次数。
+用于查找图片、插画原始出处及动画截图信息的 AstrBot 插件。
 
-## Status
+发送 `/搜图帮助` 查看当前可用渠道、别名、批量上限、缓存刷新和连续搜图用法。帮助直接生成，不调用 LLM 或搜索服务；关闭的功能不展示入口，搜图模式关闭或缺少来源渠道时说明原因。命令前缀遵循 AstrBot 设置。启用“自然语言直接搜图”时，整句“怎么搜图”“如何搜图”“搜图怎么用”“搜图帮助”及对应搜番问法会在模型调用前返回相同帮助；支持“请问”前缀和句尾标点，遵循会话唤醒条件，不调用 LLM、不解析图片、不计次数。
 
-The first runnable AstrBot vertical slice is implemented:
+## 功能与命令
 
-- `/搜图`: SauceNAO-first search with optional low-similarity follow-up and backup search.
-- `/搜图 google` (or saucenao/ascii2d): only the selected enabled source provider;
-  no fallback or anime follow-up. Multiple channels can be separated by spaces
-  or commas. Invalid/disabled channels are reported and ignored; valid selections
-  still run. No search runs when all selected channels are unavailable.
-- `/搜番`: trace.moe anime title, episode, and timestamp search.
-- Automatic anime follow-up: a reliable SauceNAO anime-database match triggers
-  trace.moe in the same `/搜图` request.
-- Directly attached and quoted HTTP(S) images are supported.
-- Commands without an image wait for a later image from the same sender and
-  conversation.
-- Local/base64 images use AstrBot's configured callback file service.
-- SerpAPI keys use round-robin selection and quota/authentication failover.
-- The unified `search_image(mode=auto/source/anime, channels="", refresh=false)` LLM tool reuses the same
-  orchestration and sends the complete grouped result itself.
+命令前缀遵循 AstrBot 设置，下面以 `/` 为例。加载前请安装 `requirements.txt` 中的依赖，并配置所需搜索服务。
 
-Ascii2d color and BOVW searches are implemented with partial failure isolation.
-QQ merged-forward result nodes and thumbnail delivery are implemented.
-SoutuBot is not implemented.
+| 命令 | 用途 |
+| --- | --- |
+| `/搜图` | 默认优先 SauceNAO，按配置及结果决定是否补搜或使用备用渠道 |
+| `/搜图 g` | 仅用 Google Lens；可用空格或逗号指定多个渠道 |
+| `/搜番` | 通过 trace.moe 查询动画名称、集数和时间点 |
+| `/搜图 -purge` | 跳过缓存重新搜索 |
+| `/搜图帮助` | 查看当前可用渠道、别名及使用方法 |
+| `/搜图模式` | 开启连续搜图；可附渠道参数 |
+| `/退出搜图模式` | 退出连续模式，不取消正在执行的搜索 |
 
-Ascii2d uses curl_cffi for browser TLS impersonation. Optional session and
-Cloudflare cookies can be configured; successful access still depends on the
-website accepting the session. Install requirements.txt before loading the plugin.
+支持直接附图、引用图片、批量图片及先发命令后补图。同一消息有直接附图时优先使用直接图片。非公网图片通过 AstrBot 回调文件服务发布，需要正确配置该服务。
+
+指定渠道时只搜索所选已启用服务，不追加备用渠道或自动搜番。部分渠道无效时提示并继续有效渠道；全部不可用时不执行搜索。默认搜图只有在 SauceNAO 返回可靠的动画库命中时，才追加 trace.moe 搜番。
+
+已接入 SauceNAO、Google Lens（SerpAPI）、Ascii2d 和 trace.moe；支持 QQ 合并转发及缩略图。Ascii2d 使用 `curl_cffi`，可配置会话及 Cloudflare Cookie，但网站仍可能拒绝访问。SoutuBot 尚未实现。
 
 ## 搜索失败与超时
 
@@ -44,60 +37,46 @@ Lens 搜索类型仅提供 all、visual_matches、exact_matches；
 [SerpAPI 已停止支持 products](https://serpapi.com/google-lens-api)。
 旧配置若手动填写 products，应改为有效类型，不静默改变搜索意图。
 
-## Google Lens safety filtering
+## Google Lens 搜索选项
 
-safe_search supports default (omit safe and use server defaults), off (send
-safe=off explicitly), and active (send safe=active). The initial value is off.
-This request setting does not guarantee a particular result or service availability.
+搜索类型：
 
-## Channel aliases
+| 显示名称 | 参数 | 行为 |
+| --- | --- | --- |
+| 默认搜索 | `all` | 请求综合结果；插件提取其中的图片匹配列表 |
+| 相似图片 | `visual_matches` | 查找视觉相似的图片及页面 |
+| 完全匹配 | `exact_matches` | 查找包含同一张图片的页面 |
 
-Configure aliases inside each source provider panel as a list of names.
-Defaults: Google Lens has g and 谷歌; SauceNAO has s; Ascii2d has a.
-For example, add 酱 to SauceNAO aliases and use 搜图 酱.
-Aliases are case-insensitive, cannot contain command separators, and cannot
-replace builtin names. Invalid/conflicting entries are ignored with a warning.
-Aliases do not enable disabled providers. Use 搜图 谷歌 to select a channel.
+安全搜索支持服务默认（不发送 `safe`）、关闭（`safe=off`）及开启（`safe=active`），初始值为关闭。此选项不保证服务可用或一定返回结果。
 
-## LLM tool contract
+## 渠道别名
 
-search_image describes only registered, enabled services and constrains its mode
-schema accordingly. Source services allow auto/source; anime services allow anime.
-Omitting mode uses auto when source search is enabled, otherwise anime.
-Unavailable modes are rejected before resolving or publishing an image.
-Descriptions and schemas are copied per request, leaving shared tools unchanged.
+在各来源服务面板中配置，每项填写一个名称。默认 Google Lens 为 `g`、`谷歌`，SauceNAO 为 `s`，Ascii2d 为 `a`。例如发送 `/搜图 谷歌` 指定 Google Lens。
+
+别名不区分大小写，不能包含命令分隔符或覆盖内置名称；无效或冲突条目会被忽略并记录警告。设置别名不会自动启用渠道。
+
+## LLM 搜图工具
+
+`search_image(mode=auto/source/anime, channels="", refresh=false)` 只描述当前已注册、已启用的服务。来源搜索提供 `auto`、`source`，搜番提供 `anime`。省略模式时，有来源服务则使用 `auto`，否则使用 `anime`。不可用模式会在解析或发布图片前被拒绝。工具描述和参数约束按请求复制，不修改共享工具。
+
 用户明确指定来源渠道时，模型须填写 channels 字符串，例如 google 或 g s；支持与命令相同的别名、大小写和分隔符。只搜索所选可用渠道，不追加备用渠道或自动搜番。混合有效/无效渠道时提示并继续有效渠道；全部不可用时不解析或发布图片、不搜索。channels 仅适用于 auto/source；未指定渠道时模型应填写空字符串，使用默认策略。对当前消息整句明确选择渠道的请求（如“搜一下谷歌”“搜一下谷歌和 SauceNAO”），工具会绑定准确渠道，避免模型漏填或填错后执行默认搜索；不读取引用正文、不匹配否定或混合意图、不做拼写模糊匹配。该绑定不改变自然语言直达范围。工具续答依据实际调用及返回结果的渠道，不能将结果归因于未命中的渠道。
-Enabled services can still fail (for example HTTP 403); the tool does not claim
-that all enabled services are called in every conditional search.
+已启用的服务仍可能失败，例如 HTTP 403；工具不会声称每次搜索都调用所有服务。
 
 真正调用 LLM 搜图工具时，插件先发送完整结果或无结果说明，再让当前会话模型以既有人格语气补一句已使用搜图工具的反馈，不重复结果、链接或错误详情。复用当前模型会话的后续回复，会产生一次工具完成后的模型续答；不另行调用人格生成模型。命令与简单自然语言直达不走这条续答路径。单句和人格语气由模型遵循指令，不能保证每次严格一致。
 
-## Search intents
+## 搜索意图与策略
 
-- `auto`: run general source search and add anime follow-up search only when a
-  provider returns a structured anime signal.
-- `source`: search for image, illustration, author, and page sources only.
-- `anime`: search specifically for anime title, episode, and timestamp matches.
+- `auto`：查找图片来源，仅在渠道返回明确动画信号时追加搜番。
+- `source`：只查找图片、插画、作者和页面来源。
+- `anime`：查询动画名称、集数和时间点。
 
-Providers return structured results. They do not format or send platform
-messages. Command handlers and LLM tools share the same search service.
+搜索渠道只返回结构化结果，不自行发送消息。命令与 LLM 工具共用搜索流程。
 
-## Provider plan
+默认优先 SauceNAO。低相似度时仅使用配置的补搜渠道，默认不补搜；完全无候选、接口失败或未启用时，仍按 Ascii2d、Google Lens 的备用顺序处理。跳过未启用或未配置的服务。
 
-- Source search prefers SauceNAO. Low-similarity outcomes use only the selected
-  follow-up service (default off). Empty or failed requests retain Ascii2d/Lens
-  backup search. Disabled/unconfigured services are skipped. Explicit channel
-  requests search only selected services and never add automatic follow-up.
-- SauceNAO returns one preferred candidate: Pixiv receives a 1.03 score preference;
-  nearby Pixiv candidates (less than 5 percentage points apart) prefer the lower
-  artwork ID. This is an earlier-post heuristic, not proof of original authorship.
-- Ascii2d returns the first valid result from each mode. Lens retains its own
-  ranking and configured result limit; scores are not mixed across providers.
-- Anime search: trace.moe, with SauceNAO anime matches used as follow-up signals.
-- Later evaluation: SoutuBot.
+SauceNAO 最终选择一条候选：Pixiv 候选有 1.03 的评分偏好；相差不足 5 个百分点的 Pixiv 候选优先较小作品 ID。这只是较早投稿的选择策略，不是原创归属证明。Ascii2d 的颜色与特征检索各取首条有效结果，失败相互隔离。Google Lens 保留自身排序及结果数量设置，不混算渠道分数。
 
-OCR, image-generation features, general bot utilities, and standalone OneBot
-administration are intentionally out of scope.
+OCR、图片生成、通用机器人功能和独立 OneBot 管理不属于本插件范围。
 
 ## 结果归并
 
@@ -154,11 +133,25 @@ QQ 群聊/私聊消息经过实际适配器序列化，但发送动作使用模�
 
 只请求作品页 HTML（单页最多 1 MiB），不下载来源原图、不携带网站 Cookie、不递归追踪来源；沿用网络代理配置，拒绝非公网地址及跨作品/跨站跳转。无需安装额外依赖或浏览器。
 
-### 简单自然语言直达搜图
+### 自然语言直接搜图
 
-默认启用“命令交互 → 简单自然语言直达搜图”。对已通过会话唤醒和群聊门控、进入模型请求流程的消息，在主对话模型调用前接管整句明确的搜图请求；不经过模型判断工具调用。
+默认启用“命令交互 → 自然语言直接搜图”。对已通过会话唤醒和群聊门控、进入模型请求流程的消息，在主对话模型调用前接管整句明确的搜图请求；不经过模型判断工具调用。
 
 支持“帮我找下出处”“找来源”“找原图”“请帮我搜图”等，可在句尾指定渠道，例如“帮我找下出处 g s 123”。渠道别名、无效数字项提示及仅搜索所选渠道的行为与搜图命令一致。无图明确请求复用同一发送者的图片等待；“搜一下”“搜下”等省略对象的请求，只有可解析图片时才接管。
+
+常见情况：
+
+| 消息 | 处理方式 |
+| --- | --- |
+| 图片 + `帮我找下出处` | 直接搜图，不调用 LLM |
+| 引用图片 + `找原图 谷歌` | 仅用 Google 搜索引用图片 |
+| `请帮我搜图`，随后发图 | 先等待当前用户在当前聊天中补图 |
+| `搜一下` | 仅在可解析到图片时直接处理 |
+| `怎么搜图`、`如何搜图？`、`搜图怎么用`、`搜图帮助` | 返回当前配置的帮助，不搜索、不计次 |
+| `怎么搜番`、`如何搜番`、`搜番怎么用` | 返回同一份帮助；这不是发起搜番 |
+| `不要搜图`、`你会搜图吗`、`找出处并分析画风` | 不直接接管，沿用原处理流程 |
+
+帮助问法支持“请问”前缀及句尾标点。以上均遵循会话唤醒条件，不会自动唤醒原本不回复的群聊。
 
 只读取当前消息的文本，不把引用消息正文当作请求；图片解析仍支持引用图片，且当前附图优先。“不要搜图”“你会搜图吗”“帮我找出处并分析画风”等不接管，保留原处理流程。复杂请求可继续使用 LLM 工具。
 
@@ -191,7 +184,7 @@ SauceNAO 的“最低相似度百分比”（默认 60）统一控制展示与�
 
 次数按 AstrBot 的 `timezone` 设置自然日重置；为空或无效时使用系统时区。计数与缓存集中保存在 `data/plugin_data/astrbot_plugin_image_search/search_state.sqlite3`，插件重载及 AstrBot 重启均保留；卸载时是否删除配置和数据遵循 AstrBot 清理选项。最多保留 1000 条缓存记录，不产生额外图片或日志目录。
 
-“命令交互 → 每次最多搜索图片数”默认 5，可设置为其他正整数。处理当前消息中的图片；当前消息无图时才取引用图片。按顺序逐图搜索、逐图展示并标明序号，单张失败不阻止后续图片；不跨图片归并结果。超过上限仅处理前面的图片并提示；次数用尽时停止剩余批次，缓存检查先于限额检查。无图命令收到后续多图消息时同样适用，保留原先指定渠道及`-purge` 参数。
+“命令交互 → 每次最多搜索图片数”默认 5，可设置为其他正整数。处理当前消息中的图片；当前消息无图时才取引用图片。按顺序逐图搜索，完成后按结果发送规则统一发送，必要时标明所属图片；单张失败不阻止后续图片；不跨图片归并结果。超过上限仅处理前面的图片并提示；次数用尽时停止剩余批次，缓存检查先于限额检查。无图命令收到后续多图消息时同样适用，保留原先指定渠道及`-purge` 参数。
 
 实际外部搜索累计超过 3 秒且仍未完成时，发送一次“正在搜索，请稍候。”；一批最多一次，缓存读取和结果发送等待不计入这 3 秒。现有单请求超时仍适用，Ascii2d 和 trace.moe 超时会明确提示；没有另行添加整次搜索总超时设置。搜图模式支持进行中重复图片控制；普通命令与 LLM 工具暂不做进行中请求去重。
 

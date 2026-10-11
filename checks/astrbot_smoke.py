@@ -471,7 +471,12 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("send_low_similarity", sauce)
         self.assertNotIn("low_accuracy_threshold", sauce)
         self.assertEqual(sauce["min_similarity"]["default"], 60)
-        self.assertEqual(keys[-1], "low_similarity_provider")
+        self.assertEqual(keys[:2], ["enabled", "api_key"])
+        self.assertEqual(keys[-1], "max_results")
+        self.assertLess(keys.index("min_similarity"), keys.index("low_similarity_provider"))
+        self.assertTrue(sauce["api_key"]["secret"])
+        self.assertEqual(len(sauce["low_similarity_provider"]["labels"]),
+                         len(sauce["low_similarity_provider"]["options"]))
         self.assertEqual(sauce["low_similarity_provider"]["options"], ["off", "Ascii2d", "google"])
         self.assertEqual(sauce["low_similarity_provider"]["default"], "off")
         self.assertNotIn("source_order", schema["command"]["items"])
