@@ -37,7 +37,7 @@ from .core.providers import (
 )
 from .image_input import find_public_image_url, find_raw_image_url, first_public_url, image_candidates_from_message, image_cache_identity, image_identities_from_message
 from .command_aliases import build_channel_aliases
-from .simple_requests import parse_simple_request, parse_tool_channels, split_search_options, is_search_help_request
+from .simple_requests import parse_simple_request, parse_tool_channels, split_search_options, is_search_help_request, has_channel_reference
 from .core.search_state import SearchState, cache_key
 from .core.search_session import SearchSessions
 from .presentation import BatchResult, build_batch_cards, count_search_results, format_search_response, format_search_help, provider_label
@@ -478,15 +478,22 @@ class ImageSearchPlugin(Star):
         req: ProviderRequest,
     ) -> None:
         if req.func_tool is None:
+            self._log_llm_search_tool(event, req, "未收到工具集")
             return
         tool = req.func_tool.get_tool("search_image")
         if tool is None:
+            self._log_llm_search_tool(event, req, "上游未提供搜图工具")
             return
         # Tool instances may be shared by requests; only modify this request.
         req.func_tool = copy(req.func_tool)
         req.func_tool.tools = list(req.func_tool.tools)
         if not self._llm_tool_enabled or not self._has_providers:
             req.func_tool.remove_tool("search_image")
+            self._log_llm_search_tool(event, req, "插件工具已关闭" if not self._llm_tool_enabled else "无可用搜索服务")
+            return
+        if self._is_unprompted_image(event):
+            req.func_tool.remove_tool("search_image")
+            self._log_llm_search_tool(event, req, "纯图片已拦截")
             return
         source_names = self._service.source_provider_names
         anime_names = self._service.anime_provider_names
@@ -523,10 +530,12 @@ class ImageSearchPlugin(Star):
                     "Only valid for auto/source, not anime."
                 ),
             }
-            requested = self._requested_source_channels(event)
-            if requested:
-                tool.parameters["properties"]["channels"]["enum"] = [requested]
-                tool.parameters["properties"]["channels"]["default"] = requested
+            requested = self._requested_source_channels(event) or ""
+            tool.parameters["properties"]["channels"]["enum"] = [requested]
+            tool.parameters["properties"]["channels"]["default"] = requested
+            tool.parameters["properties"]["channels"]["description"] += (
+                " This value is fixed by the current user message. Do not select additional channels."
+            )
             required = list(tool.parameters.get("required", []))
             if "channels" not in required:
                 required.append("channels")
@@ -545,6 +554,31 @@ class ImageSearchPlugin(Star):
         if request is not None and request.refresh:
             tool.parameters["properties"]["refresh"].update({"enum": [True], "default": True})
         req.func_tool.add_tool(tool)
+        self._log_llm_search_tool(event, req, "插件检查通过")
+
+    @staticmethod
+    def _log_llm_search_tool(event, req, status: str) -> None:
+        """Observe only this hook; downstream provider code may still remove tools."""
+        get_messages = getattr(event, "get_messages", None)
+        if not callable(get_messages):
+            return
+        components = get_messages()
+        has_image = any(isinstance(item, Image) for item in components)
+        has_reply = any(isinstance(item, Reply) for item in components)
+        if not has_image and not has_reply:
+            return
+        message_id = getattr(getattr(event, "message_obj", None), "message_id", "")
+        origin = getattr(event, "unified_msg_origin", "")
+        identity = f"{origin}:{message_id or id(event)}"
+        tag = hashlib.sha256(identity.encode()).hexdigest()[:12]
+        tools = req.func_tool
+        count = len(tools.tools) if tools is not None else 0
+        present = tools is not None and tools.get_tool("search_image") is not None
+        logger.info(
+            f"[ImageSearch] LLM工具检查 id={tag} 阶段=插件请求钩子 "
+            f"状态={status} search_image={'有' if present else '无'} 工具数={count} "
+            f"附图={'是' if has_image else '否'} 引用={'是' if has_reply else '否'}"
+        )
 
     @staticmethod
     def _current_text(event) -> str:
@@ -553,6 +587,13 @@ class ImageSearchPlugin(Star):
             return ""
         return "".join(component.text for component in get_messages()
                        if isinstance(component, Plain))
+
+    @classmethod
+    def _is_unprompted_image(cls, event) -> bool:
+        """Bare images belong to command wait/mode handlers, never the LLM tool."""
+        get_messages = getattr(event, "get_messages", None)
+        return (callable(get_messages) and not cls._current_text(event).strip()
+                and any(isinstance(component, Image) for component in get_messages()))
 
     def _requested_source_channels(self, event) -> str | None:
         return parse_tool_channels(self._current_text(event), self._channel_aliases)
@@ -588,6 +629,11 @@ class ImageSearchPlugin(Star):
                 {"success": False, "error": "搜图工具未启用或没有启用的搜索服务"},
                 ensure_ascii=False,
             )
+        if self._is_unprompted_image(event):
+            return json.dumps(
+                {"success": False, "error": "当前图片消息没有搜图指令，未执行搜索",
+                 "instruction": "不要重试搜图，也不要声称已搜索。"}, ensure_ascii=False,
+            )
         selected_mode = str(mode).strip().lower() or modes[0]
         if selected_mode not in modes:
             return json.dumps(
@@ -600,12 +646,19 @@ class ImageSearchPlugin(Star):
                               ensure_ascii=False)
         if not isinstance(refresh, bool):
             return json.dumps({"success": False, "error": "refresh 必须是布尔值"}, ensure_ascii=False)
-        channels, option = split_search_options(channels)
-        request = parse_simple_request(self._current_text(event), self._channel_aliases)
-        refresh = refresh or option or bool(request and request.refresh)
+        text = self._current_text(event)
         requested = self._requested_source_channels(event)
-        if requested:
-            channels = requested
+        if requested is None and has_channel_reference(text, self._channel_aliases):
+            return json.dumps(
+                {"success": False,
+                 "error": "无法确定要使用的搜图渠道。请用明确命令，例如「搜图 google」；多个渠道用空格分隔。",
+                 "instruction": "转告命令用法，不要自行选择渠道、重试搜图或声称已搜索。"},
+                ensure_ascii=False,
+            )
+        # Model arguments cannot expand the user's channel choice or inject -purge.
+        channels = requested or ""
+        request = parse_simple_request(text, self._channel_aliases)
+        refresh = refresh or bool(request and request.refresh)
         if channels.strip() and search_mode is SearchMode.ANIME:
             return json.dumps({"success": False, "error": "搜番模式不能指定来源搜索渠道"},
                               ensure_ascii=False)

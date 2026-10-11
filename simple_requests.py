@@ -87,3 +87,22 @@ def parse_tool_channels(text: str, aliases: dict[str, str]) -> str | None:
                     re.IGNORECASE) is None:
         return None
     return " ".join(re.findall(token, tail, re.IGNORECASE))
+
+
+def has_channel_reference(text: str, aliases: dict[str, str]) -> bool:
+    """Detect unresolved channel mentions, never infer a selection from them."""
+    names = set(aliases) | {"google_lens", "saucenao", "ascii2d"}
+    for name in names:
+        escaped = re.escape(name)
+        if re.fullmatch(r"[a-z]", name, re.IGNORECASE):
+            # A bare English article (a) is not a channel selection.
+            pattern = (r"(?:用|通过|渠道|搜图|搜一下|搜下|搜索|"
+                       r"\bchannel\s+)\s*"
+                       + escaped + r"(?![a-z0-9_])")
+        else:
+            left = r"(?<![a-z0-9_])" if name[0].isascii() and name[0].isalnum() else ""
+            right = r"(?![a-z0-9_])" if name[-1].isascii() and name[-1].isalnum() else ""
+            pattern = left + escaped + right
+        if re.search(pattern, text, re.IGNORECASE):
+            return True
+    return False

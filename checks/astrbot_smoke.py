@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+import json
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
@@ -665,7 +666,7 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(channels=channels):
                 for provider in providers.values():
                     provider.search.reset_mock()
-                event = SimpleNamespace(send=AsyncMock(), plain_result=lambda text: text)
+                event = self._simple_event("搜图 " + channels)
                 await self.plugin.tool_search_image(event, "auto", channels)
                 for name, provider in providers.items():
                     self.assertEqual(provider.search.await_count, int(name in selected))
@@ -680,10 +681,11 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         await self._configure_services("google_lens", "trace_moe")
         self.plugin._get_image_url = AsyncMock()
         self.plugin._service.search = AsyncMock()
-        for mode, channels in (("source", "s"), ("source", "typo"),
+        for mode, channels in (("source", "s"), ("source", "123"),
                                ("anime", "google"), ("source", ["google"])):
             with self.subTest(mode=mode, channels=channels):
-                feedback = json.loads(await self.plugin.tool_search_image(None, mode, channels))
+                event = self._simple_event("搜图 " + channels if isinstance(channels, str) else "找出处")
+                feedback = json.loads(await self.plugin.tool_search_image(event, mode, channels))
                 self.assertFalse(feedback["success"])
                 self.assertIn("error", feedback)
         self.plugin._get_image_url.assert_not_awaited()
@@ -715,6 +717,39 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
                 for name, provider in providers.items():
                     self.assertEqual(provider.search.await_count, int(name in selected))
 
+    async def test_model_channels_cannot_expand_default_search_or_inject_refresh(self):
+        from ..core.models import ProviderOutcome
+        self.plugin._get_image_url = AsyncMock(return_value=("https://images.example/test.jpg", None))
+        providers = {p.name: p for p in self.plugin._service._source_providers}
+        for name, provider in providers.items():
+            provider.search = AsyncMock(return_value=ProviderOutcome(matches=[
+                SourceMatch(provider=name, title=name, url="https://example.org/" + name)]))
+        for text in ("找下出处", "find a source", "search a source", "search a picture", "帮我找一下出处并分析画风"):
+            for supplied in ("saucenao,google_lens", "g -purge", "made-up"):
+                event = self._simple_event(text, [Reply(id="quoted", text="搜图 g")])
+                req = self._tool_request()
+                await self.plugin.filter_llm_tools(event, req)
+                self.assertEqual(req.func_tool.get_tool("search_image").parameters["properties"]["channels"]["enum"], [""])
+                for provider in providers.values():
+                    provider.search.reset_mock()
+                result = json.loads(await self.plugin.tool_search_image(event, "source", supplied))
+                self.assertEqual(result["attempted_providers"], ["saucenao"])
+                providers["google_lens"].search.assert_not_awaited()
+                self.assertFalse(providers["saucenao"].search.await_args.args[0].refresh)
+
+    async def test_ambiguous_channel_request_stops_before_image_resolution(self):
+        self.plugin._resolve_image_request = AsyncMock()
+        self.plugin._service.search = AsyncMock()
+        for text in ("不要用Google，找出处", "搜一下谷歌并分析画风", '他说“搜一下谷歌”',
+                     "不要用g，帮我找出处", "用酱找出处", "搜一下谷歌 -purge"):
+            event = self._simple_event(text)
+            result = json.loads(await self.plugin.tool_search_image(event, "source", "g"))
+            self.assertFalse(result["success"], text)
+            self.assertIn("明确命令", result["error"])
+            event.send.assert_not_awaited()
+        self.plugin._resolve_image_request.assert_not_awaited()
+        self.plugin._service.search.assert_not_awaited()
+
     async def test_tool_bound_disabled_channel_cannot_fall_back(self):
         import json
         await self._configure_services("google_lens")
@@ -736,7 +771,7 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         event = self._simple_event("找下出处", [Reply(text="搜一下谷歌", id="quoted")])
         request = self._tool_request()
         await self.plugin.filter_llm_tools(event, request)
-        self.assertNotIn("enum", request.func_tool.get_tool("search_image").parameters["properties"]["channels"])
+        self.assertEqual(request.func_tool.get_tool("search_image").parameters["properties"]["channels"]["enum"], [""])
 
     async def test_source_enrichment_shared_by_command_and_tool(self):
         from ..core.models import ProviderOutcome
@@ -1016,6 +1051,59 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
                 }
             },
         )
+
+    async def test_llm_tool_diagnostics_distinguish_hook_outcomes_without_sensitive_data(self):
+        image_event = self._simple_event("sou一下google secret-text", [Image(file="https://private.test/secret")])
+        cases = [
+            (SimpleNamespace(func_tool=None), "未收到工具集"),
+            (SimpleNamespace(func_tool=ToolSet()), "上游未提供搜图工具"),
+            (self._tool_request(), "插件检查通过"),
+        ]
+        for req, status in cases:
+            with patch(f"{ImageSearchPlugin.__module__}.logger.info") as log:
+                await self.plugin.filter_llm_tools(image_event, req)
+                log.assert_called_once()
+                line = log.call_args.args[0]
+                self.assertIn(status, line)
+                self.assertIn("阶段=插件请求钩子", line)
+                self.assertIn("search_image=" + ("有" if status == "插件检查通过" else "无"), line)
+                for secret in ("secret-text", "private.test", "sender", "platform:group:test"):
+                    self.assertNotIn(secret, line)
+        for disabled, text, status in ((True, "搜图", "插件工具已关闭"),
+                                      (False, "", "纯图片已拦截")):
+            self.plugin._llm_tool_enabled = not disabled
+            with patch(f"{ImageSearchPlugin.__module__}.logger.info") as log:
+                await self.plugin.filter_llm_tools(self._simple_event(text, [Image(file="https://site.test/i")]), self._tool_request())
+                self.assertIn(status, log.call_args.args[0])
+        with patch(f"{ImageSearchPlugin.__module__}.logger.info") as log:
+            await self.plugin.filter_llm_tools(self._simple_event("你好"), self._tool_request())
+            log.assert_not_called()
+        with patch(f"{ImageSearchPlugin.__module__}.logger.info") as log:
+            await self.plugin.filter_llm_tools(self._simple_event("搜一下谷歌", [Reply(id="quoted-secret")]), self._tool_request())
+            self.assertIn("引用=是", log.call_args.args[0])
+            self.assertNotIn("quoted-secret", log.call_args.args[0])
+
+    async def test_bare_image_cannot_invoke_llm_search_or_mutate_shared_tools(self):
+        self.plugin._resolve_image_request = AsyncMock()
+        self.plugin._service.search = AsyncMock()
+        for text in ("", "  "):
+            event = self._simple_event(text, [Image(file="https://site.test/image")])
+            req = self._tool_request()
+            shared = req.func_tool
+            await self.plugin.route_simple_search(event, req)
+            await self.plugin.filter_llm_tools(event, req)
+            self.assertIsNone(req.func_tool.get_tool("search_image"))
+            self.assertIsNotNone(shared.get_tool("search_image"))
+            self.assertIsNotNone(req.func_tool.get_tool("other"))
+            result = json.loads(await self.plugin.tool_search_image(event))
+            self.assertFalse(result["success"])
+            event.send.assert_not_awaited()
+        self.plugin._resolve_image_request.assert_not_awaited()
+        self.plugin._service.search.assert_not_awaited()
+        req = self._tool_request()
+        await self.plugin.filter_llm_tools(
+            self._simple_event("帮我查一下出处", [Image(file="https://site.test/image")]), req)
+        self.assertIsNotNone(req.func_tool.get_tool("search_image"))
 
     async def test_tool_contract_is_request_local_and_repeatable(self) -> None:
         req = self._tool_request()

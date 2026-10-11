@@ -12,7 +12,7 @@ from astrbot.api.event import MessageChain
 from astrbot.core.message.components import Image, Nodes, Plain
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
-from ..core.models import SearchResponse, SourceMatch
+from ..core.models import AnimeMatch, SearchResponse, SourceMatch
 from ..main import ImageSearchPlugin
 from ..result_delivery import ResultDelivery
 from ..presentation import BatchResult
@@ -61,6 +61,29 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             BatchResult(2, response(), cached=True)]))
         target.send.assert_awaited_once()
         self.assertEqual(len(target.send.await_args.args[0].chain[0].nodes), 2)
+
+    async def test_all_providers_multiple_results_force_one_node_per_image(self):
+        for matches in (
+            [AnimeMatch("trace_moe", "Anime", episode=str(i), similarity=95,
+                        preview_url=f"https://images.test/{i}") for i in range(3)],
+            response(google=False).matches,
+        ):
+            value = SearchResponse(matches=matches)
+            for threshold in (0, 2, 10):
+                self.delivery._merged_forward_threshold = threshold
+                for cached in (False, True):
+                    for platform in ("aiocqhttp", "telegram"):
+                        target = event(platform)
+                        self.assertTrue(await self.delivery.try_send(target, value, cached=cached))
+                        chain = target.send.await_args.args[0].chain
+                        self.assertEqual(isinstance(chain[0], Nodes), platform == "aiocqhttp")
+                        if platform == "aiocqhttp":
+                            self.assertEqual(len(chain[0].nodes), 1)
+                    target = event()
+                    self.assertTrue(await self.delivery.try_send_batch(target, [
+                        BatchResult(1, value, cached=cached), BatchResult(2, value)]))
+                    target.send.assert_awaited_once()
+                    self.assertEqual(len(target.send.await_args.args[0].chain[0].nodes), 2)
 
     async def test_duplicate_google_matches_do_not_force_forward(self):
         self.delivery._merged_forward_threshold = 0
@@ -192,7 +215,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             value = SearchResponse(matches=[
                 SourceMatch(provider="saucenao", title=str(i), url=f"https://example.org/{i}",
                             thumbnail_url="https://images.test/shared")
-                for i in range(count)
+                for i in range(1)
             ])
             target = event()
             self.assertTrue(await self.delivery.try_send_batch(target, [BatchResult(i + 1, value) for i in range(count)]))
@@ -201,7 +224,8 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_threshold_counts_groups_not_raw_matches_or_notices(self):
         self.delivery._merged_forward_threshold = 3
-        value = response(google=False)  # Three raw matches, two grouped results.
+        value = response(google=False)
+        value.matches = value.matches[:2]  # Two raw matches, one grouped result.
         value.notices = ["Notice"]
         value.failed_providers = ["ascii2d"]
         value.attempted_providers = ["saucenao", "google_lens", "ascii2d"]
@@ -221,7 +245,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             for count in (threshold - 1, threshold, threshold + 1):
                 value = SearchResponse(matches=[
                     SourceMatch(provider="saucenao", title=str(i), url=f"https://site.test/{i}")
-                    for i in range(count)
+                    for i in range(1)
                 ])
                 target = event()
                 sent = await self.delivery.try_send_batch(target, [BatchResult(i + 1, value) for i in range(count)])
@@ -326,7 +350,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_disabled_forward_still_sends_ordinary_images(self):
         self.delivery._merged_forward_threshold = 0
         target = event()
-        self.assertTrue(await self.delivery.try_send(target, response(google=False)))
+        self.assertTrue(await self.delivery.try_send(target, SearchResponse(matches=response(google=False).matches[:2])))
         self.assertFalse(any(isinstance(item, Nodes) for item in target.send.await_args.args[0].chain))
 
     async def test_disabled_images_do_not_download(self):
@@ -342,7 +366,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.delivery._merged_forward_threshold = 0
         self.delivery._show_thumbnails = False
         target = event()
-        self.assertFalse(await self.delivery.try_send(target, response(google=False)))
+        self.assertFalse(await self.delivery.try_send(target, SearchResponse(matches=response(google=False).matches[:2])))
         self.assertFalse(await self.delivery.try_send(target, SearchResponse()))
         target.send.assert_not_awaited()
         self.delivery._images.load.assert_not_awaited()

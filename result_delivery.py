@@ -6,8 +6,7 @@ import asyncio
 from astrbot.api import logger
 from astrbot.core.message.components import Image, Node, Nodes, Plain
 
-from .core.models import SearchResponse, SourceMatch
-from .core.source_results import group_source_matches
+from .core.models import SearchResponse
 from .presentation import BatchResult, ResultCard, build_batch_cards, build_result_cards, count_search_results
 from .runtime.preview_images import PreviewImageLoader
 
@@ -29,21 +28,15 @@ class ResultDelivery:
     async def try_send(self, event, response: SearchResponse, *, log_context: str = "", cached: bool = False) -> bool:
         """True means delivered; False asks the caller to send its plain fallback."""
         return await self._try_send(event, build_result_cards(response, cached=cached), count_search_results(response), log_context,
-                                    force_forward=self._has_multiple_google_results(response))
+                                    force_forward=count_search_results(response) >= 2)
 
     async def try_send_batch(self, event, results: list[BatchResult], *, log_context: str = "") -> bool:
         count = sum(count_search_results(item.response) for item in results if item.response is not None)
         groups = [build_batch_cards([item]) for item in results]
         cards = [card for group in groups for card in group]
         return await self._try_send(event, cards, count, log_context, [len(group) for group in groups],
-                                    force_forward=any(self._has_multiple_google_results(item.response)
+                                    force_forward=any(count_search_results(item.response) >= 2
                                                       for item in results if item.response is not None))
-
-    @staticmethod
-    def _has_multiple_google_results(response: SearchResponse) -> bool:
-        sources = [match for match in response.matches if isinstance(match, SourceMatch)]
-        return sum(any(match.provider == "google_lens" for match in group)
-                   for group in group_source_matches(sources)) >= 2
 
     async def _try_send(self, event, cards: list[ResultCard], result_count: int, log_context: str,
                         group_sizes: list[int] | None = None, *, force_forward: bool = False) -> bool:
@@ -67,7 +60,7 @@ class ResultDelivery:
             f"类型={'合并转发' if forward else '普通图文'} "
             f"结果={result_count} 普通消息={message_count} 门槛={threshold} 卡片={len(cards)} 缩略图={len(images)} "
             f"消息={1 if forward else message_count} "
-            f"Google多结果强制转发={'是' if forward and force_forward else '否'}"
+            f"同图多结果强制转发={'是' if forward and force_forward else '否'}"
         )
         if not forward and len(group_sizes) > 1:
             offset = 0

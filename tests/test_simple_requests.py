@@ -1,7 +1,7 @@
 import unittest
 
 from command_aliases import build_channel_aliases
-from simple_requests import parse_simple_request, parse_tool_channels, is_search_help_request
+from simple_requests import parse_simple_request, parse_tool_channels, is_search_help_request, has_channel_reference
 
 
 class SimpleRequestTests(unittest.TestCase):
@@ -82,6 +82,13 @@ class SimpleRequestTests(unittest.TestCase):
                      "搜一下谷歌\n顺便分析", "搜图 " + "1 " * 200):
             with self.subTest(text=text):
                 self.assertIsNone(parse_tool_channels(text, self.aliases))
+
+    def test_unresolved_channel_mentions_do_not_infer_selection(self):
+        for text in ("不用Google", "谷歌不要用", "不要用g", "渠道 s 不要", "channel a please",
+                     "搜图 g 并分析", "用酱找出处", "ASCII2D is unavailable"):
+            self.assertTrue(has_channel_reference(text, self.aliases), text)
+        for text in ("find a source", "search a source", "search a picture", "use a picture", "请find a source", "a picture", "source please", "googled", "找出处"):
+            self.assertFalse(has_channel_reference(text, self.aliases), text)
 
     def test_tool_binding_does_not_expand_direct_route(self):
         self.assertIsNone(self.parse("搜一下谷歌"))

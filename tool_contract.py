@@ -27,7 +27,7 @@ def tool_description(
         )
         parts.append(
             "When the user explicitly selects source channels (for example Google), "
-            "you must pass them in channels. For an unspecified default search, "
+            "channels is fixed by the plugin from the current user message. Do not choose extra channels. For an unspecified default search, "
             "pass an empty string. Explicit channels search only the selected services "
             "without fallback or anime follow-up."
         )

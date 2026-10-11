@@ -82,9 +82,13 @@ SerpAPI keys rotate, with another key tried for rejected authentication or quota
 
 ## LLM search tool
 
+Channels are bound to the current message text, not chosen by the model. With no channel selection the default search plan applies. Exact supported requests bind the selected channels; unresolved mentions return command guidance before searching. Quoted text does not select channels. Disabled channels are not silently replaced. A model-supplied `-purge` in `channels` cannot trigger refresh; the independent `refresh` parameter is unchanged.
+
+Image-only messages do not expose the image search tool to the LLM. Active search mode and commands waiting for an image still handle them directly.
+
 `search_image(mode=auto/source/anime, channels="", refresh=false)` describes only registered, enabled providers. Source providers allow `auto` and `source`; anime providers allow `anime`. Omitting the mode uses `auto` when source search is enabled, otherwise `anime`. Unavailable modes are rejected before image resolution or publication. Tool descriptions and schemas are copied per request rather than mutating shared tools.
 
-`channels` applies only to `auto` and `source`. For an explicit provider request the model must pass the selected channels, using the same aliases, case handling, and separators as commands. An empty string uses the default plan. Whole-message provider requests such as `搜一下谷歌` or `搜一下谷歌和 SauceNAO` bind the requested channels so omitted or incorrect model arguments cannot silently select the default plan. This does not expand the direct natural-language router. Negations, mixed intents, and quoted text are not bound.
+`channels` applies only to `auto` and `source`. Supported whole-message requests such as `搜一下谷歌` and `搜一下谷歌和 SauceNAO` bind the selected channels, using the command aliases. This does not expand the direct natural-language router. Negations and mixed requests mentioning a known channel require an explicit command instead of a guessed selection.
 
 The plugin sends complete results or a no-result explanation first. The existing conversation model then continues with a brief acknowledgment in its current persona, without repeating titles, links, or error details. This is a model continuation after tool use, not a separate persona-generation call. Commands and direct natural-language routing skip that continuation. Exact wording and persona adherence depend on the model. Feedback reports the actual providers and must not claim a source was found when none was returned.
 
@@ -96,7 +100,7 @@ SauceNAO displays provider/similarity, title/author, thumbnail, result link, opt
 
 The merged-forward threshold defaults to 2 and accepts 0–10. It counts ordinary messages: all results and diagnostics for one input image form one message; an image-processing failure also occupies one message. Normally, 0 disables forwards, 1 always forwards, and 2–10 forwards at or above the threshold.
 
-**Google exception:** two or more Google matches for one input image force a merged forward, even at threshold 0. One Google match follows the threshold. Cache hits follow the same rule. Each input image remains one forward node; results are not split into multiple forwards at ten matches.
+**Multiple results per image:** two or more results for one input image force a merged forward across all providers, including anime search, even at threshold 0. One result follows the threshold. Cache hits follow the same rule. Each input image remains one forward node; results are not split into multiple forwards at ten matches.
 
 Google results share a single heading, with numbered titles, thumbnails, and links separated by blank lines. A single match is not numbered. Cached Google results use `Google Lens[缓存]` once at the top. On QQ/aiocqhttp, each node corresponds to one ordinary message. Other platforms send one ordinary message per input image.
 
