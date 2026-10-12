@@ -1,10 +1,15 @@
-# astrbot_plugin_image_search
-
-<a href="https://github.com/kano0222/astrbot_plugin_image_search/releases"><img alt="Version" src="https://img.shields.io/badge/version-1.0.0-blue?style=for-the-badge" /></a>
-<a href="https://github.com/Soulter/AstrBot"><img alt="AstrBot" src="https://img.shields.io/badge/AstrBot-plugin-green?style=for-the-badge" /></a>
-<a href="https://github.com/kano0222/astrbot_plugin_image_search"><img alt="Last Commit" src="https://img.shields.io/github/last-commit/kano0222/astrbot_plugin_image_search?style=for-the-badge" /></a>
-
-<img src="https://count.getloli.com/@kano_astrbot_plugin_image_search?theme=booru-jaypee" alt="Moe Counter" />
+<div align="center">
+  <h1>astrbot_plugin_image_search</h1>
+  <img src="logo.png" alt="搜图插件 Logo" width="200" />
+  <br>
+  <br>
+  <a href="https://github.com/kano0222/astrbot_plugin_image_search/releases"><img alt="Version" src="https://img.shields.io/badge/version-1.0.0-blue?style=for-the-badge" /></a>
+  <a href="https://github.com/Soulter/AstrBot"><img alt="AstrBot" src="https://img.shields.io/badge/AstrBot-plugin-green?style=for-the-badge" /></a>
+  <a href="https://github.com/kano0222/astrbot_plugin_image_search"><img alt="Last Commit" src="https://img.shields.io/github/last-commit/kano0222/astrbot_plugin_image_search?style=for-the-badge" /></a>
+  <br>
+  <img src="https://count.getloli.com/@kano_astrbot_plugin_image_search?theme=booru-jaypee" alt="Moe Counter" />
+  <br>
+</div>
 
 用于查找图片出处的 AstrBot 插件。支持 SauceNAO、Google Lens、Ascii2d 和 trace.moe，可以通过命令和简单自然语言搜图，也支持 LLM 工具调用。
 
@@ -29,12 +34,12 @@
 2. 在插件配置的“搜索服务”中启用需要的渠道，填写对应凭证，再加载或重载插件。
 3. 在同一条消息中发送 `/搜图` 和图片，或引用一条带图消息发送 `/搜图`。发送 `/搜图帮助` 可确认当前可用渠道。
 
-| 渠道 | 需要填写 |
-| --- | --- |
-| SauceNAO | [API Key](https://saucenao.com/user.php) |
+| 渠道        | 需要填写                                                            |
+| ----------- | ------------------------------------------------------------------- |
+| SauceNAO    | [API Key](https://saucenao.com/user.php)                            |
 | Google Lens | [SerpAPI API Key](https://serpapi.com/manage-api-key)，支持多个 Key |
-| Ascii2d | 可选的 `_session_id`、`cf_clearance` Cookie |
-| trace.moe | 可选 Token，留空使用匿名额度 |
+| Ascii2d     | 可选的 `_session_id`、`cf_clearance` Cookie                         |
+| trace.moe   | 可选 Token，留空使用匿名额度                                        |
 
 ## 使用
 
@@ -111,3 +116,5 @@
 ## 鸣谢
 
 本插件结合了 [cq-picsearcher-bot](https://github.com/Tsuk1ko/cq-picsearcher-bot) 和 [astrbot_plugin_imgexploration](https://github.com/iona-s/astrbot_plugin_imgexploration) 的搜图思路与交互方式。
+
+代码采用 [MIT 许可证](LICENSE)。Logo 图片不包含在此授权中。
