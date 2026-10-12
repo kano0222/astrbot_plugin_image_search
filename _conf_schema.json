@@ -68,7 +68,7 @@
           "enabled": {
             "type": "bool",
             "description": "启用 Google Lens",
-            "default": false
+            "default": true
           },
           "serpapi_keys": {
             "type": "list",

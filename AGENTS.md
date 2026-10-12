@@ -22,15 +22,29 @@ This repository contains one AstrBot plugin for finding the origin of an image.
 - Inspect relevant code, upstream hooks, and downstream calls before drawing conclusions about behavior or side effects. Do not infer the behavior of an entire workflow from one module.
 - User-facing labels and instructions must describe concrete behavior, not project nicknames or collaboration history. Keep display names separate from internal identifiers.
 
-## Execution and verification
+## Execution, verification, and final review
 
 - Complete authorized implementation, integration, and automated validation as one coherent batch. Avoid repeated confirmation and fragmented manual checks.
 - For small, low-risk changes, apply proportionate judgment and execute directly. Do not turn routine modifications into lengthy design discussions.
 - Prefer the smallest sufficient change, but do not sacrifice correctness or maintainability merely to minimize the diff.
 - Verify the actual behavior affected by a change. Use focused tests and existing project tooling; do not introduce dependencies or infrastructure without a concrete need.
+- After verification, review the final result for correctness, omissions, regressions, unnecessary complexity, and consistency with existing behavior. Verification evidence and review judgments are distinct; passing checks does not establish that a result is well designed.
+- For documentation, review the reader's path, ambiguous wording, examples, and duplication as well as factual accuracy. Keyword or default-value coverage checks do not prove semantic correctness. Keep essential usage in the README and detailed configuration or troubleshooting in the advanced guide, with working links and limited purposeful repetition.
+- Fix clear review findings within the authorized scope and reverify affected changes. Report consequential out-of-scope findings without expanding the task. Direct verification and self-review are sufficient for routine edits; use the independent review criteria below when a separate perspective materially helps.
 - Distinguish code changes, file deployment, live-instance reload, and runtime verification. Do not present one as proof of another.
 - Do not assume authorization for externally visible, destructive, or disruptive actions.
 - Never report intended or unverified work as completed. Clearly identify meaningful validation gaps.
+
+## Independent subagent review
+
+- The primary agent must automatically consider independent review at meaningful decision points, including analysis and discussion, not only before implementation.
+- Delegate to `reviewer` when a proposed solution involves cross-layer behavior, competing root-cause hypotheses, significant architectural tradeoffs, or material uncertainty that could change the recommended approach.
+- Trigger review before presenting a consequential recommendation or implementing the chosen solution. The user should not need to explicitly request review.
+- Do not delegate for routine questions, straightforward fixes, well-supported conclusions, or minor reversible changes.
+- The reviewer is read-only and independently examines the original problem, repository evidence, competing explanations, and proposed solution. It should challenge unsupported assumptions rather than merely confirm the primary agent's reasoning.
+- The primary agent evaluates reviewer findings and resolves ordinary disagreements before responding. Present unresolved material tradeoffs to the user.
+- Limit review to one bounded round per decision point. Do not repeatedly review the same conclusion unless new material evidence emerges.
+- Retain the existing post-implementation `verifier` policy and the documented `workspace-write` isolation limitation.
 
 ## Communication and reporting
 
@@ -40,6 +54,6 @@ This repository contains one AstrBot plugin for finding the origin of an image.
 - Avoid boilerplate sections, ceremonial confirmations, repetitive progress narration, and obvious implementation details presented as important findings.
 - Do not turn routine technical choices into formal design discussions. Explain a choice only when its rationale is non-obvious or affects behavior, maintainability, or risk.
 - During execution, report meaningful findings, blockers, or deviations rather than narrating every step.
-- After implementation, briefly state what actually changed, what was verified, and any remaining issues. Omit empty sections and unnecessary process descriptions.
+- After implementation, briefly distinguish actual changes, verification evidence, meaningful review findings or tradeoffs, and remaining uncertainty. Report what the review found, not merely that checks passed. Do not claim independent review unless a separate reviewer performed it; omit empty sections and unnecessary process descriptions.
 - Distinguish facts, inferences, assumptions, and uncertainty. Do not exaggerate benefits, risks, confidence, or the significance of minor changes.
 - Brevity must not hide important evidence, behavior changes, failures, or unresolved risks. Minimize unnecessary words, not necessary reasoning or verification.
