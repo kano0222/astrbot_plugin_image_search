@@ -25,7 +25,7 @@ class TraceMoeProvider:
         *,
         token: str = "",
         max_results: int = 3,
-        min_similarity: float = 0.85,
+        min_similarity: float = 0.5,
         cut_borders: bool = True,
         timeout_seconds: float = 30,
     ) -> None:

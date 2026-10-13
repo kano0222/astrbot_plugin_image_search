@@ -19,10 +19,15 @@ def format_search_help(
 ) -> str:
     """Describe only commands backed by currently available services."""
     lines = ["搜图帮助"]
+    has_default = bool(set(source_names) & {"saucenao", "ascii2d", "google_lens"})
     if not source_names and not anime_names:
         return "搜图帮助\n当前没有可用的搜索服务，请联系管理员配置。"
     if source_names:
         lines.append("/搜图：搜索图片出处，可附图或引用图片。")
+        if "soutubot" in source_names:
+            lines.append("/搜本 或 /搜图 soutubot：搜索 Soutubot 全部来源，仅明确指定时使用。")
+        if not has_default:
+            lines.append("当前没有默认搜图渠道，请在搜图、搜图模式和刷新命令中指定渠道。")
         for name in source_names:
             names = sorted((alias for alias, target in aliases.items() if target == name),
                            key=lambda alias: (len(alias), alias))
@@ -36,10 +41,13 @@ def format_search_help(
     lines.append(f"支持一次多图，最多 {batch_limit} 张；也可先发命令，再发送图片。")
     if cache_enabled:
         command = "搜图" if source_names else "搜番"
+        if source_names and not has_default:
+            command += " " + source_names[0]
         lines.append(f"刷新缓存：/{command} -purge；成功后更新缓存。")
     if search_mode_enabled and source_names:
+        selection = "" if has_default else " " + source_names[0]
         lines.append(
-            f"连续搜图：/搜图模式，可附渠道；直接发图，{mode_timeout:g} 秒无动作自动退出。\n"
+            f"连续搜图：/搜图模式{selection}，可附渠道；直接发图，{mode_timeout:g} 秒无动作自动退出。\n"
             "模式内发送「退出」结束，也可使用 /退出搜图模式。"
         )
     elif not search_mode_enabled:
@@ -138,29 +146,36 @@ def build_result_cards(response: SearchResponse, *, cached: bool = False) -> lis
     cards = []
     numbered = count_search_results(response) > 1
     source_groups = group_source_matches(sources)
-    lens_index = 0
+    compact_counts: dict[str, int] = {}
     for index, group in enumerate(source_groups, start=1):
         previews = tuple(dict.fromkeys(m.thumbnail_url for m in group if m.thumbnail_url))
         lines = _format_source_match(index if numbered else None, group)
         pure_lens = all(m.provider == "google_lens" for m in group)
-        if pure_lens and (numbered or cached):
-            lens_index += 1
+        pure_book = all(m.provider == "soutubot" for m in group)
+        compact_series = (pure_lens and (numbered or cached)) or (pure_book and numbered)
+        if compact_series:
+            provider = group[0].provider
+            compact_counts[provider] = compact_counts.get(provider, 0) + 1
+            series_index = compact_counts[provider]
             title = next((m.title for m in group if m.title and m.title != "未提供标题"), "未提供标题")
             scores = list(dict.fromkeys(m.similarity for m in group if m.similarity is not None))
             score_text = " / ".join(f"{score:.2f}%" for score in scores)
-            caption = (f"{lens_index}. " if numbered else "") + title + (f" ({score_text})" if score_text else "")
-            header = "Google Lens" + ("[缓存]" if cached else "")
-            lines = ([header] if lens_index == 1 else []) + [caption]
+            if pure_book:
+                author = next((m.author for m in group if m.author), "")
+                title = "/".join(f"「{value}」" for value in (title, author) if value)
+            caption = (f"{series_index}. " if numbered else "") + title + (f" ({score_text})" if score_text else "")
+            header = provider_label(provider) + ("[缓存]" if cached else "")
+            lines = ([header] if series_index == 1 else []) + [caption]
             lines.extend(_source_links(group, ("url", "author_url", "source_url"), match_first=True))
         image_after = None
-        if any(match.provider in {"saucenao", "google_lens"} for match in group):
+        if any(match.provider in {"saucenao", "google_lens", "soutubot"} for match in group):
             image_after = next(
                 (i for i, line in enumerate(lines)
                  if line.startswith(("http://", "https://", "Author: "))),
                 len(lines),
             )
         text = "\n".join(lines)
-        if cached and not pure_lens:
+        if cached and not pure_lens and not compact_series:
             text = "[缓存] " + text
         cards.append(ResultCard(text, previews, image_after))
     for index, match in enumerate(anime, start=1):
@@ -177,7 +192,7 @@ def build_result_cards(response: SearchResponse, *, cached: bool = False) -> lis
 
 
 def _format_source_match(index: int | None, matches: list[SourceMatch]) -> list[str]:
-    if any(match.provider in {"saucenao", "google_lens"} for match in matches):
+    if any(match.provider in {"saucenao", "google_lens", "soutubot"} for match in matches):
         return _format_compact_match(index, matches)
     providers = list(dict.fromkeys(match.provider for match in matches))
     labels = " / ".join(provider_label(name) for name in providers)
@@ -251,7 +266,7 @@ def _format_compact_match(index: int | None, matches: list[SourceMatch]) -> list
          if match.title and match.title != "未提供标题"), "",
     )
     author = next((match.author for match in preferred if match.author), "")
-    if author or any(match.provider == "saucenao" for match in matches):
+    if author or any(match.provider in {"saucenao", "soutubot"} for match in matches):
         caption = "/".join(f"「{value}」" for value in (title, author) if value)
     else:
         caption = title
@@ -288,6 +303,7 @@ def provider_label(name: str) -> str:
         "saucenao": "SauceNAO",
         "ascii2d": "Ascii2d",
         "trace_moe": "trace.moe",
+        "soutubot": "Soutubot",
     }.get(name, name)
 
 

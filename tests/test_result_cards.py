@@ -7,6 +7,46 @@ from presentation import build_result_cards, format_search_response
 
 
 class ResultCardTests(unittest.TestCase):
+    def test_multiple_book_results_share_header_like_google(self):
+        response = SearchResponse(matches=[
+            SourceMatch(provider="soutubot", title=f"Book · 第 {page} 页", author="Artist",
+                        similarity=score, url=f"https://site.test/page/{page}")
+            for page, score in ((5, 91.25), (6, 88.0))
+        ])
+        for cached in (False, True):
+            cards = build_result_cards(response, cached=cached)
+            self.assertEqual(cards[0].text.splitlines()[:2], [
+                "Soutubot" + ("[缓存]" if cached else ""),
+                "1. 「Book · 第 5 页」/「Artist」 (91.25%)"])
+            self.assertEqual(cards[1].text.splitlines()[0], "2. 「Book · 第 6 页」/「Artist」 (88.00%)")
+            self.assertEqual(sum(card.text.count("Soutubot") for card in cards), 1)
+            self.assertEqual([card.image_after_lines for card in cards], [2, 1])
+
+    def test_book_layout_preserves_original_links(self):
+        url = "https://new.example/g/123/5/?x=1#page"
+        match = SourceMatch(provider="soutubot", title="Book · 第 5 页", site_name="Library",
+                            author="Artist", similarity=91.25, url=url, source_url=url,
+                            thumbnail_url="https://images.test/preview.jpg")
+        response = SearchResponse(matches=[match])
+        card = build_result_cards(response, cached=True)[0]
+        self.assertEqual(card.text.splitlines(), [
+            "[缓存] Soutubot (91.25%)", "「Book · 第 5 页」/「Artist」", url])
+        self.assertEqual(card.image_after_lines, 2)
+        self.assertEqual(card.text.splitlines()[-1], url)
+        self.assertEqual(card.text.count(url), 1)
+        self.assertEqual(match.url, url)
+        self.assertEqual(card.preview_urls, (match.thumbnail_url,))
+        self.assertIn(url, format_search_response(response))
+
+    def test_shared_book_link_is_deduplicated_when_other_channel_comes_first(self):
+        url = "https://new.example/work"
+        matches = [SourceMatch(provider=name, title="Work", url=url, source_url=url)
+                   for name in ("google_lens", "soutubot")]
+        card = build_result_cards(SearchResponse(matches=matches))[0]
+        self.assertEqual(card.text.count(url), 1)
+        self.assertEqual(card.text.splitlines()[-1], url)
+        self.assertIn(url, build_result_cards(SearchResponse(matches=matches[:1]))[0].text)
+
     def test_grouped_card_keeps_all_channels_and_thumbnail_candidates(self):
         response = SearchResponse(matches=[
             SourceMatch(provider="saucenao", title="Artwork", similarity=94,

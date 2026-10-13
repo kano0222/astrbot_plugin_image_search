@@ -174,7 +174,7 @@
           "cf_clearance": {
             "type": "string",
             "description": "cf_clearance Cookie",
-            "hint": "需要 Cloudflare 验证时填写；可能过期，不保证解除访问限制。",
+            "hint": "遇到 Cloudflare 验证时填写对应 Cookie。",
             "default": "",
             "secret": true
           }
@@ -199,7 +199,7 @@
           "min_similarity": {
             "type": "int",
             "description": "最低相似度百分比",
-            "default": 85,
+            "default": 50,
             "slider": {
               "min": 0,
               "max": 100,
@@ -215,6 +215,28 @@
             "type": "bool",
             "description": "自动裁剪黑边",
             "default": true
+          }
+        }
+      },
+      "soutubot": {
+        "description": "Soutubot",
+        "type": "object",
+        "items": {
+          "enabled": {
+            "type": "bool",
+            "description": "启用 Soutubot搜本",
+            "default": false,
+            "hint": "仅用于搜本或明确指定 soutubot 渠道"
+          },
+          "max_results": {
+            "type": "int",
+            "description": "最大结果数",
+            "default": 3,
+            "slider": {
+              "min": 1,
+              "max": 10,
+              "step": 1
+            }
           }
         }
       }
@@ -362,6 +384,12 @@
         "description": "User-Agent",
         "default": "AstrBot Image Search/0.1"
       }
+    },
+    "debug_logging": {
+      "type": "bool",
+      "description": "调试日志",
+      "default": false,
+      "hint": "开启详细流程日志，便于排查问题。"
     }
   }
 }

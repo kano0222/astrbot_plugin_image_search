@@ -23,7 +23,7 @@ class FakeProvider:
 class AutomaticFollowupTests(unittest.IsolatedAsyncioTestCase):
     async def test_signal_without_source_match_still_runs_followup(self) -> None:
         source = FakeProvider(
-            "source",
+            "saucenao",
             ProviderOutcome(suggests_anime=True),
         )
         followup = FakeProvider(

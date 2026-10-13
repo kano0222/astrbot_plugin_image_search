@@ -28,12 +28,24 @@ def safe_failure_reason(error: BaseException) -> str:
             }[http.group(1)]
             suffix = "，访问受限" if http.group(2) == "403" else ""
             return f"{stage}返回 HTTP {http.group(2)}{suffix}"
-        service_http = re.fullmatch(r"(SauceNAO|SerpAPI) returned HTTP (\d{3})", text)
+        service_http = re.fullmatch(r"(SauceNAO|SerpAPI|Soutubot) returned HTTP (\d{3})", text)
         if service_http:
             status = service_http.group(2)
             suffix = "，服务端异常" if status.startswith("5") else ""
+            if service_http.group(1) == "Soutubot":
+                suffix = {"403": "，访问受限", "429": "，请求频率或额度受限"}.get(status, suffix)
             return f"搜索接口返回 HTTP {status}{suffix}"
         known = {
+            "Soutubot request timed out": "请求超时",
+            "Soutubot request failed": "网络请求失败",
+            "Soutubot returned invalid data": "搜索接口返回无效数据",
+            "Soutubot returned a search error": "搜索接口返回错误",
+            "Soutubot all libraries failed": "全部图库搜索失败",
+            "Soutubot image format is unsupported": "图片格式不支持，请使用 JPEG、PNG、GIF、WebP 或 BMP",
+            "Soutubot image could not be read": "无法读取图片",
+            "Soutubot image URL is invalid": "图片下载地址无效",
+            "Soutubot image exceeds 5 MiB": "图片超过 5 MiB，请缩小后重试",
+            "Soutubot image download failed": "图片下载失败",
             "Google Lens request timed out": "请求超时",
             "SauceNAO request timed out": "请求超时",
             "Ascii2d request timed out": "请求超时",

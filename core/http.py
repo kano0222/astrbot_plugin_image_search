@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
+from .models import ImageAsset
+
 
 @dataclass(frozen=True, slots=True)
 class JsonResponse:
@@ -35,4 +37,18 @@ class JsonHttpClient(Protocol):
         Returns:
             HTTP status and decoded response body.
         """
+        ...
+
+
+class ImageUploadHttpClient(Protocol):
+    """Upload a bounded image as a multipart file and return decoded JSON."""
+
+    async def upload_image_json(
+        self,
+        url: str,
+        *,
+        image: ImageAsset,
+        data: Mapping[str, str],
+        timeout_seconds: float,
+    ) -> JsonResponse:
         ...

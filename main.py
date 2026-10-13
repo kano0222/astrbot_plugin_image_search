@@ -33,6 +33,7 @@ from .core.providers import (
     Ascii2dProvider,
     GoogleLensProvider,
     SauceNaoProvider,
+    SoutubotProvider,
     TraceMoeProvider,
 )
 from .image_input import find_public_image_url, find_raw_image_url, first_public_url, image_candidates_from_message, image_cache_identity, image_identities_from_message
@@ -61,6 +62,7 @@ class ImageSearchPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
         super().__init__(context)
         self._config = _as_dict(config)
+        self._debug_logging = _as_bool(self._config.get("debug_logging"), False)
         llm_config = _section(self._config, "llm")
         self._llm_tool_enabled = _as_bool(llm_config.get("enabled"), True)
         command_config = _section(self._config, "command")
@@ -114,6 +116,7 @@ class ImageSearchPlugin(Star):
             max_preview_images=min(20, _positive_int(output.get("max_preview_images"), 6)),
             proxy_url=str(network.get("proxy_url") or ""),
             user_agent=str(network.get("user_agent") or _DEFAULT_USER_AGENT),
+            debug_logging=self._debug_logging,
         )
         self._source_pages = SourcePageClient(
             proxy_url=str(network.get("proxy_url") or ""),
@@ -178,6 +181,14 @@ class ImageSearchPlugin(Star):
                 )
             )
 
+        soutubot = _section(providers, "soutubot")
+        if _as_bool(soutubot.get("enabled"), False):
+            source_providers.append(SoutubotProvider(
+                self._web_http,
+                max_results=_bounded_int(soutubot.get("max_results"), 3, 1, 10),
+                timeout_seconds=self._timeout_seconds,
+            ))
+
         trace = _section(providers, "trace_moe")
         if _as_bool(trace.get("enabled"), True):
             anime_providers.append(
@@ -185,7 +196,7 @@ class ImageSearchPlugin(Star):
                     self._http,
                     token=str(trace.get("token") or ""),
                     max_results=_positive_int(trace.get("max_results"), 3),
-                    min_similarity=_percentage(trace.get("min_similarity"), 85),
+                    min_similarity=_percentage(trace.get("min_similarity"), 50),
                     cut_borders=_as_bool(trace.get("cut_borders"), True),
                     timeout_seconds=self._timeout_seconds,
                 )
@@ -232,10 +243,14 @@ class ImageSearchPlugin(Star):
         if delivered:
             event.stop_event()
 
+    def _debug_log(self, message: str) -> None:
+        if self._debug_logging:
+            logger.info(message)
+
     def _log_search_mode(self, key, action, **fields):
         scope = hashlib.sha256(repr(key).encode()).hexdigest()[:12]
         details = " ".join(f"{name}={value}" for name, value in fields.items())
-        logger.info(f"[ImageSearch] 搜图模式 会话用户={scope} 动作={action} {details}".rstrip())
+        self._debug_log(f"[ImageSearch] 搜图模式 会话用户={scope} 动作={action} {details}".rstrip())
 
     def _renew_search_session(self, event, key, providers):
         async def expired():
@@ -373,6 +388,16 @@ class ImageSearchPlugin(Star):
         async for result in self._search_source_channels(event, channels):
             yield result
 
+    @filter.command("搜本")
+    async def search_book_command(self, event: AstrMessageEvent, options: GreedyStr = ""):
+        """使用 Soutubot 搜索全部来源，包括本子、漫画和插画。"""
+        remaining, refresh = split_search_options(options)
+        if remaining:
+            yield event.plain_result("搜本仅支持 -purge 参数；组合渠道请用「搜图 soutubot google」。")
+            return
+        async for result in self._search_source_channels(event, "soutubot", refresh=refresh):
+            yield result
+
     async def _search_source_channels(
         self, event: AstrMessageEvent, channels: str,
         *, image_resolution: ImageResolution | tuple[str | None, str | None] | None = None,
@@ -424,6 +449,8 @@ class ImageSearchPlugin(Star):
                         else ""
                     )
                 )
+        elif not self._service.source_plan_names and self._service.source_provider_names:
+            return [], "没有可用的默认搜图渠道，请明确指定渠道，例如「搜本」或「搜图 soutubot」。"
         return provider_names, notice
 
     @filter.command("搜番")
@@ -556,8 +583,7 @@ class ImageSearchPlugin(Star):
         req.func_tool.add_tool(tool)
         self._log_llm_search_tool(event, req, "插件检查通过")
 
-    @staticmethod
-    def _log_llm_search_tool(event, req, status: str) -> None:
+    def _log_llm_search_tool(self, event, req, status: str) -> None:
         """Observe only this hook; downstream provider code may still remove tools."""
         get_messages = getattr(event, "get_messages", None)
         if not callable(get_messages):
@@ -574,7 +600,7 @@ class ImageSearchPlugin(Star):
         tools = req.func_tool
         count = len(tools.tools) if tools is not None else 0
         present = tools is not None and tools.get_tool("search_image") is not None
-        logger.info(
+        self._debug_log(
             f"[ImageSearch] LLM工具检查 id={tag} 阶段=插件请求钩子 "
             f"状态={status} search_image={'有' if present else '无'} 工具数={count} "
             f"附图={'是' if has_image else '否'} 引用={'是' if has_reply else '否'}"
@@ -662,7 +688,10 @@ class ImageSearchPlugin(Star):
         if channels.strip() and search_mode is SearchMode.ANIME:
             return json.dumps({"success": False, "error": "搜番模式不能指定来源搜索渠道"},
                               ensure_ascii=False)
-        provider_names, notice = self._resolve_source_channels(channels)
+        provider_names, notice = (
+            (None, None) if search_mode is SearchMode.ANIME
+            else self._resolve_source_channels(channels)
+        )
         if provider_names == []:
             return json.dumps({"success": False, "error": notice,
                                "instruction": "转告渠道不可用的说明，不要改用其他渠道搜索。"},
@@ -784,7 +813,7 @@ class ImageSearchPlugin(Star):
         batch_started = time.monotonic()
         cached_count = 0
         external_count = 0
-        logger.info(
+        self._debug_log(
             f"[ImageSearch] id={batch_id} 请求开始 mode={mode.value} "
             f"输入图片={total} 处理上限={self._batch_limit} 待处理={len(images)}"
         )
@@ -792,11 +821,11 @@ class ImageSearchPlugin(Star):
             for index, (url, error) in enumerate(images, 1):
                 request_id = f"{batch_id}/{index}"
                 if not url:
-                    logger.info(f"[ImageSearch] id={request_id} 图片跳过 原因=图片地址不可用")
+                    self._debug_log(f"[ImageSearch] id={request_id} 图片跳过 原因=图片地址不可用")
                     batch_results.append(BatchResult(index, message=error or "获取图片失败，请重新发送。"))
                     continue
                 if not names:
-                    logger.info(f"[ImageSearch] id={request_id} 搜索停止 原因=没有可用渠道")
+                    self._debug_log(f"[ImageSearch] id={request_id} 搜索停止 原因=没有可用渠道")
                     batch_results.append(BatchResult(index, message="没有可用的搜索服务，请先检查插件配置。"))
                     break
                 cache_config = {
@@ -814,7 +843,7 @@ class ImageSearchPlugin(Star):
                                 "跳过:用户重搜" if refresh else
                                 "命中" if cached else "未命中:无有效记录")
                 cache_age = f" 缓存年龄={max(0, time.time()-cached[1]):.0f}s" if cached else ""
-                logger.info(
+                self._debug_log(
                     f"[ImageSearch] id={request_id} 图片处理 URL指纹={image_identity} "
                     f"缓存身份={identity.split(':', 1)[0] if identity else 'URL'} 标识指纹={stable_fingerprint} "
                     f"条件指纹={condition} 缓存键={key[:12]} 缓存={cache_status}{cache_age}"
@@ -822,7 +851,7 @@ class ImageSearchPlugin(Star):
                 if cached:
                     cached_count += 1
                     response, _ = cached
-                    logger.info(
+                    self._debug_log(
                         f"[ImageSearch] id={request_id} 缓存读取完成 "
                         f"结果={count_search_results(response)} 外部搜索=无"
                     )
@@ -830,7 +859,7 @@ class ImageSearchPlugin(Star):
                     day = self._day()
                     reserved = user is not None and not admin
                     if reserved and not state.reserve(user, day, self._daily_limit):
-                        logger.info(f"[ImageSearch] id={request_id} 搜索停止 原因=每日限额已满")
+                        self._debug_log(f"[ImageSearch] id={request_id} 搜索停止 原因=每日限额已满")
                         batch_results.append(BatchResult(index, message=f"今日搜索次数已达上限（{self._daily_limit} 次），剩余图片未处理。"))
                         break
                     started = time.monotonic()
@@ -871,7 +900,7 @@ class ImageSearchPlugin(Star):
                         storage = ("未保存:缓存关闭" if not self._cache_enabled else
                                    "未保存:无结果" if not response.matches else
                                    "未保存:渠道失败" if response.failed_providers else "未保存:含诊断提示")
-                    logger.info(
+                    self._debug_log(
                         f"[ImageSearch] id={request_id} 搜索收尾 缓存={storage} "
                         f"计次={'免计' if not reserved else '计入' if response.matches or response.filtered_providers else '退回'}"
                     )
@@ -886,13 +915,13 @@ class ImageSearchPlugin(Star):
                 elif not await self._send_rich_result(event, item.response, request_id, cached=item.cached):
                     yield event.plain_result(format_search_response(item.response, cached=item.cached))
             elif batch_results:
-                logger.info(f"[ImageSearch] id={batch_id} 批量结果发送开始")
+                self._debug_log(f"[ImageSearch] id={batch_id} 批量结果发送开始")
                 if not await self._delivery.try_send_batch(event, batch_results, log_context=f"id={batch_id}"):
-                    logger.info(f"[ImageSearch] id={batch_id} 结果交由普通文字发送")
+                    self._debug_log(f"[ImageSearch] id={batch_id} 结果交由普通文字发送")
                     for item in batch_results:
                         yield event.plain_result("\n\n".join(card.text for card in build_batch_cards([item])))
                 else:
-                    logger.info(f"[ImageSearch] id={batch_id} 结果已直接发送")
+                    self._debug_log(f"[ImageSearch] id={batch_id} 结果已直接发送")
             logger.info(
                 f"[ImageSearch] id={batch_id} 请求完成 搜索完成图片={sum(item.response is not None for item in batch_results)} "
                 f"缓存图片={cached_count} 外部搜索图片={external_count} "
@@ -1024,7 +1053,7 @@ class ImageSearchPlugin(Star):
             self._service.source_plan_names
         )
         plan_text = ("、" if provider_names is not None else " > ").join(plan)
-        logger.info(
+        self._debug_log(
             f"[ImageSearch] id={request_id} 搜索开始 mode={mode.value} "
             f"选择={'指定' if provider_names is not None else '默认'} "
             f"计划={plan_text or '无'}"
@@ -1037,7 +1066,7 @@ class ImageSearchPlugin(Star):
                 f"耗时={time.monotonic() - started:.2f}s"
             )
             raise
-        logger.info(
+        self._debug_log(
             f"[ImageSearch] id={request_id} 搜索完成 "
             f"实际渠道={','.join(response.attempted_providers) or '无'} "
             f"结果={count_search_results(response)} 原始条目={len(response.matches)} "
@@ -1045,15 +1074,18 @@ class ImageSearchPlugin(Star):
             f"失败渠道={','.join(response.failed_providers) or '无'} "
             f"耗时={time.monotonic() - started:.2f}s"
         )
+        for provider, diagnostics in response.diagnostics.items():
+            for diagnostic in diagnostics:
+                self._debug_log(f"[ImageSearch] id={request_id} 渠道诊断 {provider}: {diagnostic}")
         return request_id, response
 
     async def _send_rich_result(self, event, response, request_id: str, *, cached: bool = False) -> bool:
-        logger.info(f"[ImageSearch] id={request_id} 结果发送开始")
+        self._debug_log(f"[ImageSearch] id={request_id} 结果发送开始")
         sent = await self._delivery.try_send(event, response, log_context=f"id={request_id}", cached=cached)
         if sent:
-            logger.info(f"[ImageSearch] id={request_id} 结果已直接发送")
+            self._debug_log(f"[ImageSearch] id={request_id} 结果已直接发送")
         else:
-            logger.info(f"[ImageSearch] id={request_id} 结果交由普通文字发送")
+            self._debug_log(f"[ImageSearch] id={request_id} 结果交由普通文字发送")
         return sent
 
     @staticmethod

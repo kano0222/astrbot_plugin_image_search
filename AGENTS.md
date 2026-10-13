@@ -1,59 +1,74 @@
-# Repository Guidance
+# Contributing to AstrBot Image Search
 
-This repository contains one AstrBot plugin for finding the origin of an image.
+This repository contains an AstrBot plugin for finding image sources and identifying anime scenes. Start with [README.md](README.md) for usage and [ADVANCED.md](ADVANCED.md) for configuration and troubleshooting.
 
-- Keep command handling, LLM tools, search orchestration, providers, and presentation separate.
-- Commands must invoke the search application directly and must not depend on an LLM.
-- Providers return structured results and never send AstrBot messages themselves.
-- `auto`, `source`, and `anime` are user intents, not provider names.
-- Do not add unrelated bot features such as OCR, media parsing, reminders, or administration.
-- Do not add compatibility migrations before the first public release.
-- Do not copy GPL or AGPL implementation code without an explicit licensing decision.
-- Add focused tests for search-plan behavior and provider failure isolation.
+## Scope and architecture
 
-## Collaboration and product decisions
+Improve search reliability, result quality, and usability. New providers and settings should solve a concrete need and reuse existing capabilities. OCR, media parsing, reminders, and bot administration are outside this plugin's scope.
 
-- Distinguish discussion and evaluation from execution. Explicit implementation requests authorize reasonable implementation, integration, and testing, but do not establish that the proposed design is sound. Raise material objections with evidence and practical alternatives; otherwise proceed without unnecessary confirmation.
-- Before adding a feature or setting, assess its concrete benefit, existing capabilities, user burden, and maintenance cost. Reuse or replace overlapping capabilities; do not add parallel controls for one decision.
-- Prefer improving core search reliability, result quality, and usability over expanding the feature set. Do not introduce features, settings, or abstractions solely for hypothetical future needs.
-- Challenge incorrect premises, unnecessary complexity, and low-value technical proposals. Do not treat technical feasibility as sufficient justification or invent hypothetical benefits to support a proposal.
-- Preserve user decision authority. Ask only when unresolved ambiguity or an alternative materially changes the requested outcome or risk. Once the user has acknowledged a tradeoff and explicitly chosen a direction, respect that decision unless new material evidence or risks emerge.
-- Correct obvious typos and omissions in project conversation from context. This does not authorize runtime fuzzy matching, new configuration, or other product behavior.
-- Inspect relevant code, upstream hooks, and downstream calls before drawing conclusions about behavior or side effects. Do not infer the behavior of an entire workflow from one module.
-- User-facing labels and instructions must describe concrete behavior, not project nicknames or collaboration history. Keep display names separate from internal identifiers.
+| Location | Responsibility |
+| --- | --- |
+| `main.py` | AstrBot integration, command and LLM hooks, configuration, request lifecycle |
+| `command_aliases.py`, `simple_requests.py`, `image_input.py` | Channel parsing, direct text routing, image selection and identity |
+| `tool_contract.py` | LLM tool descriptions and completion instructions |
+| `core/models.py`, `core/provider.py`, `core/service.py` | Structured contracts, search plans and provider failure isolation |
+| `core/providers/` | Search service adapters and response parsing |
+| `core/search_state.py`, `core/image_wait.py`, `core/search_session.py` | Cache and quotas, pending images, continuous search sessions |
+| `runtime/` | HTTP transport, uploads, preview downloads and source-page access |
+| `presentation.py`, `result_delivery.py` | Result grouping, text and cards, rich delivery and fallback |
+| `_conf_schema.json`, `metadata.yaml`, `requirements.txt` | Public configuration, plugin metadata and runtime dependencies |
+| `tests/`, `checks/` | Unit tests and AstrBot integration checks |
 
-## Execution, verification, and final review
+Keep parsing, orchestration, network access, and message delivery separate. Providers return structured results; they do not send messages or depend on AstrBot handlers. Commands invoke the search service directly and do not require an LLM.
 
-- Complete authorized implementation, integration, and automated validation as one coherent batch. Avoid repeated confirmation and fragmented manual checks.
-- For small, low-risk changes, apply proportionate judgment and execute directly. Do not turn routine modifications into lengthy design discussions.
-- Prefer the smallest sufficient change, but do not sacrifice correctness or maintainability merely to minimize the diff.
-- Verify the actual behavior affected by a change. Use focused tests and existing project tooling; do not introduce dependencies or infrastructure without a concrete need.
-- After verification, review the final result for correctness, omissions, regressions, unnecessary complexity, and consistency with existing behavior. Verification evidence and review judgments are distinct; passing checks does not establish that a result is well designed.
-- For documentation, review the reader's path, ambiguous wording, examples, and duplication as well as factual accuracy. Keyword or default-value coverage checks do not prove semantic correctness. Keep essential usage in the README and detailed configuration or troubleshooting in the advanced guide, with working links and limited purposeful repetition.
-- Fix clear review findings within the authorized scope and reverify affected changes. Report consequential out-of-scope findings without expanding the task. Direct verification and self-review are sufficient for routine edits; use the independent review criteria below when a separate perspective materially helps.
-- Distinguish code changes, file deployment, live-instance reload, and runtime verification. Do not present one as proof of another.
-- Do not assume authorization for externally visible, destructive, or disruptive actions.
-- Never report intended or unverified work as completed. Clearly identify meaningful validation gaps.
+## Behavior contracts
 
-## Independent subagent review
+- `auto`, `source`, and `anime` express user intent, not provider names. Adding a provider must not automatically expand the default search plan.
+- Explicit channel selection searches only the selected available providers, without fallback or anime follow-up. Tool channels come from the current user message, not quoted text or model-supplied additions.
+- Preserve current-image priority over quoted images, sender and chat isolation for pending images and sessions, and the meaning of `-purge`.
+- Keep provider failures isolated. Preserve successful results and meaningful diagnostics; distinguish empty results, filtered candidates, and failed requests.
+- Preserve cache identity, expiry, quota accounting, and persisted data. Changes to defaults must not silently overwrite explicit user settings.
+- Keep raw result URLs and identities separate from display formatting. Reuse existing grouping and delivery paths for new providers.
 
-- The primary agent must automatically consider independent review at meaningful decision points, including analysis and discussion, not only before implementation.
-- Delegate to `reviewer` when a proposed solution involves cross-layer behavior, competing root-cause hypotheses, significant architectural tradeoffs, or material uncertainty that could change the recommended approach.
-- Trigger review before presenting a consequential recommendation or implementing the chosen solution. The user should not need to explicitly request review.
-- Do not delegate for routine questions, straightforward fixes, well-supported conclusions, or minor reversible changes.
-- The reviewer is read-only and independently examines the original problem, repository evidence, competing explanations, and proposed solution. It should challenge unsupported assumptions rather than merely confirm the primary agent's reasoning.
-- The primary agent evaluates reviewer findings and resolves ordinary disagreements before responding. Present unresolved material tradeoffs to the user.
-- Limit review to one bounded round per decision point. Do not repeatedly review the same conclusion unless new material evidence emerges.
-- Retain the existing post-implementation `verifier` policy and the documented `workspace-write` isolation limitation.
+## Making changes
 
-## Communication and reporting
+- Check `git status` and read the affected implementation, callers, and tests. Preserve unrelated changes.
+- Fix problems at the owning layer. Add regression coverage for observable behavior rather than reproducing the implementation in a test.
+- Keep changes focused. Discuss changes to public behavior, configuration, persisted data, or dependencies before expanding an agreed task. Avoid speculative abstractions and duplicate controls.
+- Validate external responses and configuration at their boundaries. Do not turn unexpected errors into successful empty results or invent missing metadata or links.
+- Use bounded timeouts and downloads, release resources on cancellation, and retain configured proxy behavior. Logs must not contain credentials, private image URLs, or raw upstream payloads.
+- Keep user-facing text concise and concrete. Put essential usage in the README and details in the advanced guide; update configuration labels and documentation together.
+- Check licensing before reusing external code. Do not copy GPL or AGPL implementations without an explicit licensing decision. See [LICENSE](LICENSE) and the README's asset licensing note.
 
-- Communicate in concise, natural engineering language. Prioritize conclusions, concrete facts, and information that affects decisions.
-- Match explanation depth to complexity. Answer simple questions directly; explain reasoning, tradeoffs, and risks when they materially matter.
-- Do not restate or repackage the user's requirements as a lengthy plan or summary. Explain what was discovered, decided, changed, or remains unresolved.
-- Avoid boilerplate sections, ceremonial confirmations, repetitive progress narration, and obvious implementation details presented as important findings.
-- Do not turn routine technical choices into formal design discussions. Explain a choice only when its rationale is non-obvious or affects behavior, maintainability, or risk.
-- During execution, report meaningful findings, blockers, or deviations rather than narrating every step.
-- After implementation, briefly distinguish actual changes, verification evidence, meaningful review findings or tradeoffs, and remaining uncertainty. Report what the review found, not merely that checks passed. Do not claim independent review unless a separate reviewer performed it; omit empty sections and unnecessary process descriptions.
-- Distinguish facts, inferences, assumptions, and uncertainty. Do not exaggerate benefits, risks, confidence, or the significance of minor changes.
-- Brevity must not hide important evidence, behavior changes, failures, or unresolved risks. Minimize unnecessary words, not necessary reasoning or verification.
+## Development and validation
+
+Use Python 3.10 or later and an AstrBot 4.x environment compatible with `metadata.yaml`. Install [requirements.txt](requirements.txt) into the same Python environment used by AstrBot. The integration checks also require AstrBot and its dependencies to be installed.
+
+Run commands from the repository root:
+
+```sh
+python -m unittest discover -s tests
+python -m unittest discover -s tests -p test_trace_moe.py
+python checks/run_checks.py
+git diff --check
+```
+
+The second command is an example of focused provider validation. `checks/run_checks.py` runs the unit, AstrBot integration, and result-delivery suites. When changing the shared curl client, also run Cookie checks from the directory containing the plugin package:
+
+```sh
+python -m astrbot_plugin_image_search.checks.curl_cookie_smoke
+```
+
+- During iteration, run focused tests. Before handing off behavior changes, run the full regression batch in the AstrBot environment and check changed Python files with Ruff when available.
+- Cover routing, thresholds, provider failure isolation, parsing, and resource cleanup where affected. For presentation, cover grouping and plain-message fallback as well as rich output.
+- For documentation-only changes, verify wording, links, paths, commands, and `git diff --check`; runtime tests do not validate prose.
+- Report failed, skipped, or unavailable checks. Missing dependencies and skipped integration tests are validation gaps.
+- Tests and successful API responses do not prove live QQ delivery or client rendering. Distinguish source edits, installed files, runtime reload, and live verification. Use isolated copies for automated checks; deployment, reload, and external-service testing require authorization for that activity.
+
+## Review and handoff
+
+Review the final diff for correctness, regressions, omissions, and unnecessary complexity. Explain the behavior changed, validation results, and remaining gaps. Keep public PR descriptions focused on the change; exclude private logs and machine-specific details.
+
+For complex or high-risk changes, provide the goal, constraints, scoped diff, test evidence, and specific review questions. Keep reviewed code stable and validate findings before applying them.
+
+Keep this guide aligned with module ownership, behavior contracts, and validation commands. Use repository-relative links; keep local paths and conversation identifiers out of contributor documentation.

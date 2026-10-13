@@ -32,8 +32,8 @@ class FakeProvider:
 class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_source_mode_only_runs_source_providers(self) -> None:
         source = FakeProvider(
-            "source",
-            ProviderOutcome(matches=[SourceMatch(provider="source", title="match")]),
+            "saucenao",
+            ProviderOutcome(matches=[SourceMatch(provider="saucenao", title="match")]),
         )
         anime = FakeProvider("anime")
         service = SearchService(source_providers=[source], anime_providers=[anime])
@@ -48,7 +48,7 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(anime.calls, [])
 
     async def test_anime_mode_only_runs_anime_providers(self) -> None:
-        source = FakeProvider("source")
+        source = FakeProvider("saucenao")
         anime = FakeProvider(
             "anime",
             ProviderOutcome(matches=[AnimeMatch(provider="anime", title="show")]),
@@ -66,8 +66,8 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_auto_mode_skips_anime_followup_without_signal(self) -> None:
         source = FakeProvider(
-            "source",
-            ProviderOutcome(matches=[SourceMatch(provider="source", title="match")]),
+            "saucenao",
+            ProviderOutcome(matches=[SourceMatch(provider="saucenao", title="match")]),
         )
         followup = FakeProvider("followup")
         service = SearchService(
@@ -85,9 +85,9 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_auto_mode_runs_anime_followup_after_signal(self) -> None:
         source = FakeProvider(
-            "source",
+            "saucenao",
             ProviderOutcome(
-                matches=[SourceMatch(provider="source", title="anime database")],
+                matches=[SourceMatch(provider="saucenao", title="anime database")],
                 suggests_anime=True,
             ),
         )
@@ -152,7 +152,7 @@ class SearchServiceTests(unittest.IsolatedAsyncioTestCase):
 
         response = await service.search(
             ImageAsset(url="https://example.com/image.jpg"),
-            SearchMode.SOURCE,
+            SearchMode.SOURCE, provider_names=["failed", "successful"],
         )
 
         self.assertEqual([match.title for match in response.matches], ["match"])

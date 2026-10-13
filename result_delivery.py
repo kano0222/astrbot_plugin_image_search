@@ -15,12 +15,14 @@ class ResultDelivery:
     def __init__(
         self, *, merged_forward_threshold: int = 2, show_thumbnails: bool = True,
         max_preview_images: int = 6, proxy_url: str = "", user_agent: str = "",
+        debug_logging: bool = False,
     ) -> None:
         if (isinstance(merged_forward_threshold, bool)
                 or not isinstance(merged_forward_threshold, int)
                 or not 0 <= merged_forward_threshold <= 10):
             raise ValueError("merged_forward_threshold must be between zero and ten")
         self._merged_forward_threshold = merged_forward_threshold
+        self._debug_logging = debug_logging
         self._show_thumbnails = show_thumbnails
         self._max_images = max(1, min(20, max_preview_images))
         self._images = PreviewImageLoader(proxy_url=proxy_url, user_agent=user_agent)
@@ -55,13 +57,14 @@ class ResultDelivery:
         images = await self._load_images(cards, group_sizes) if self._show_thumbnails else {}
         if not forward and not images:
             return False
-        logger.info(
-            f"[ImageSearch] {log_context} 结果发送 "
-            f"类型={'合并转发' if forward else '普通图文'} "
-            f"结果={result_count} 普通消息={message_count} 门槛={threshold} 卡片={len(cards)} 缩略图={len(images)} "
-            f"消息={1 if forward else message_count} "
-            f"同图多结果强制转发={'是' if forward and force_forward else '否'}"
-        )
+        if self._debug_logging:
+            logger.info(
+                f"[ImageSearch] {log_context} 结果发送 "
+                f"类型={'合并转发' if forward else '普通图文'} "
+                f"结果={result_count} 普通消息={message_count} 门槛={threshold} 卡片={len(cards)} 缩略图={len(images)} "
+                f"消息={1 if forward else message_count} "
+                f"同图多结果强制转发={'是' if forward and force_forward else '否'}"
+            )
         if not forward and len(group_sizes) > 1:
             offset = 0
             for size in group_sizes:

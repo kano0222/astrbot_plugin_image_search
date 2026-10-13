@@ -3,7 +3,7 @@
   <img src="logo.png" alt="搜图插件 Logo" width="200" />
   <br>
   <br>
-  <a href="https://github.com/kano0222/astrbot_plugin_image_search/releases"><img alt="Version" src="https://img.shields.io/badge/version-1.0.0-blue?style=for-the-badge" /></a>
+  <a href="https://github.com/kano0222/astrbot_plugin_image_search/releases"><img alt="Version" src="https://img.shields.io/badge/version-1.1.0-blue?style=for-the-badge" /></a>
   <a href="https://github.com/Soulter/AstrBot"><img alt="AstrBot" src="https://img.shields.io/badge/AstrBot-plugin-green?style=for-the-badge" /></a>
   <a href="https://github.com/kano0222/astrbot_plugin_image_search"><img alt="Last Commit" src="https://img.shields.io/github/last-commit/kano0222/astrbot_plugin_image_search?style=for-the-badge" /></a>
   <br>
@@ -11,7 +11,7 @@
   <br>
 </div>
 
-用于查找图片出处的 AstrBot 插件。支持 SauceNAO、Google Lens、Ascii2d 和 trace.moe，可以通过命令和简单自然语言搜图，也支持 LLM 工具调用。
+用于查找图片出处的 AstrBot 插件。支持 SauceNAO、Google Lens、Ascii2d、trace.moe 和 Soutubot，可以通过命令和简单自然语言搜图，也支持 LLM 工具调用。
 
 ## 目录
 
@@ -40,6 +40,7 @@
 | Google Lens | [SerpAPI API Key](https://serpapi.com/manage-api-key)，支持多个 Key |
 | Ascii2d     | 可选的 `_session_id`、`cf_clearance` Cookie                         |
 | trace.moe   | 可选 Token，留空使用匿名额度                                        |
+| Soutubot    | 无需凭证，默认关闭                                                   |
 
 ## 使用
 
@@ -47,15 +48,18 @@
 
 | 命令                           | 用途                                             |
 | ------------------------------ | ------------------------------------------------ |
-| `/搜图`                        | 按默认策略查找图片出处                           |
-| `/搜图 g`                      | 只用 Google Lens                                 |
-| `/搜图 g s`                    | 同时使用 Google Lens 和 SauceNAO，也可用逗号分隔 |
-| `/搜番`                        | 查询动画名称、集数和时间点                       |
-| `/搜图 -purge`、`/搜番 -purge` | 跳过缓存，重新搜索                               |
-| `/搜图模式`                    | 开启连续搜图，可附渠道参数，如 `/搜图模式 g`     |
-| `/退出搜图模式`                | 退出连续搜图                                     |
+| `/搜图`                        | 按默认策略查找图片出处                            |
+| `/搜图 g`                      | 只用 Google Lens                                  |
+| `/搜图 g s`                    | 同时使用 Google Lens 和 SauceNAO，也可用逗号分隔  |
+| `/搜本`、`/搜图 soutubot`      | 使用 Soutubot 搜索本子、漫画和插画                |
+| `/搜番`                        | 查询动画名称、集数和时间点                        |
+| `/搜图 -purge`、`/搜番 -purge` | 跳过缓存，重新搜索                                |
+| `/搜图模式`                    | 开启连续搜图，可附渠道参数，如 `/搜图模式 g`      |
+| `/退出搜图模式`                | 退出连续搜图                                      |
 
 在命令消息中附图，或引用一条带图消息即可搜索。也可以先发命令，再在默认 **60 秒**内补图；等待只接收同一聊天中同一发送者的图片。当前消息和引用消息都有图片时，只搜索当前附图。
+
+Soutubot 默认关闭，需在“搜索服务 → Soutubot”中启用。它只在明确指定时使用，不加入默认搜索或自动补搜。
 
 ### 自然语言搜图
 
@@ -85,7 +89,7 @@
 
 指定渠道只搜所选可用服务，不追加备用渠道、低相似度补搜或自动搜番。多个渠道并行执行；部分无效时提示并继续有效渠道，全部不可用时不搜索。默认别名是 Google Lens 的 `g`、`谷歌`，SauceNAO 的 `s`，Ascii2d 的 `a`。
 
-默认搜图命中可靠的 SauceNAO 动画库结果时，会追加已启用的 trace.moe 查询；低相似度候选不会触发。`/搜番` 直接使用 trace.moe，同样按配置的相似度门槛筛选结果。
+默认搜图命中可靠的 SauceNAO 动画库结果时，会追加已启用的 trace.moe 查询；低相似度候选不会触发。`/搜番` 直接使用 trace.moe，按“最低相似度百分比”筛选结果，默认 50%。
 
 ## 搜索与展示设置
 
@@ -109,7 +113,7 @@
 
 - **渠道不可用**：检查启用状态及凭据，用 `/搜图帮助` 确认可用渠道。
 - **图片无法搜索**：检查附图或引用是否可解析，以及文件服务链接能否被外部访问。
-- **Ascii2d 验证拦截**：Cookie 可能过期，填写后也不保证可用，可明确指定其他渠道。
+- **Ascii2d 验证拦截**：检查 Cookie 是否有效，或切换其他渠道。
 - **响应慢或超时**：检查网络和服务额度。请求超时按单次服务请求计算，整批多图可能耗时更久。
 - **模型没有调用工具**：确认工具开关，或直接用搜图命令。
 

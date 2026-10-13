@@ -1,6 +1,6 @@
 name: astrbot_plugin_image_search
 display_name: 搜图
-desc: 搜索图片来源。
-version: v1.0.0
+desc: 通过多个搜图服务查找图片出处，支持命令和自然语言使用。
+version: v1.1.0
 astrbot_version: ">=4.25,<5"
 author: kano0222

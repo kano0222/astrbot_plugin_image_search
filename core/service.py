@@ -124,6 +124,7 @@ class SearchService:
         response.failed_providers.extend(followup.response.failed_providers)
         response.failure_details.update(followup.response.failure_details)
         response.notices.extend(followup.response.notices)
+        response.diagnostics.update(followup.response.diagnostics)
         response.filtered_providers.update(followup.response.filtered_providers)
         return response
 
@@ -151,6 +152,7 @@ class SearchService:
             result = await self._run_providers((provider,), image, mode)
             stage.response.matches.extend(result.response.matches)
             stage.response.notices.extend(result.response.notices)
+            stage.response.diagnostics.update(result.response.diagnostics)
             stage.response.filtered_providers.update(result.response.filtered_providers)
             stage.response.attempted_providers.extend(
                 result.response.attempted_providers
@@ -167,20 +169,8 @@ class SearchService:
                     stage.response.notices.append("设定的低相似度补搜渠道未启用，请检查搜索服务配置。")
                     break
 
-        # Keep the protocol usable for additional providers without assuming scores.
-        others = [
-            p
-            for p in self._source_providers
-            if p.name not in {"saucenao", "ascii2d", "google_lens"}
-        ]
-        extra = await self._run_providers(others, image, mode)
-        stage.response.matches.extend(extra.response.matches)
-        stage.response.notices.extend(extra.response.notices)
-        stage.response.filtered_providers.update(extra.response.filtered_providers)
-        stage.response.attempted_providers.extend(extra.response.attempted_providers)
-        stage.response.failed_providers.extend(extra.response.failed_providers)
-        stage.response.failure_details.update(extra.response.failure_details)
-        stage.outcomes.extend(extra.outcomes)
+        # Additional providers require explicit selection; registration alone must
+        # never expand the default set of services receiving an image.
         return stage
 
     @staticmethod
@@ -219,6 +209,8 @@ class SearchService:
                 continue
             stage.response.matches.extend(result.matches)
             stage.response.notices.extend(result.notices)
+            if result.diagnostics:
+                stage.response.diagnostics[provider.name] = list(result.diagnostics)
             if result.filtered_below is not None:
                 stage.response.filtered_providers[provider.name] = result.filtered_below
             stage.outcomes.append(result)

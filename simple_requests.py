@@ -47,6 +47,8 @@ def parse_simple_request(
     text = text.strip().rstrip(_END).strip()
     if not text or text.startswith("/") or "\n" in text or "\r" in text:
         return None
+    if re.fullmatch(_PREFIX + r"搜本(?:\s+-purge)?", text):
+        return SimpleSearchRequest(channels="soutubot", refresh=text.endswith("-purge"))
     for pattern, requires_image in ((_EXPLICIT, False), (_CONTEXTUAL, True)):
         match = re.fullmatch(_PREFIX + pattern + r"(?:\s+(.+))?", text)
         if match is None:
@@ -56,7 +58,7 @@ def parse_simple_request(
         # Unknown numeric channel names use the command's existing warning;
         # arbitrary Chinese text must not be interpreted as a channel selection.
         if any(not token or (
-            token not in aliases and token not in {"google_lens", "saucenao", "ascii2d"}
+            token not in aliases and token not in {"google_lens", "saucenao", "ascii2d", "soutubot"}
             and re.fullmatch(r"[0-9]+", token) is None
         ) for token in tokens):
             return None
@@ -80,7 +82,7 @@ def parse_tool_channels(text: str, aliases: dict[str, str]) -> str | None:
     )
     if match is None:
         return None
-    names = set(aliases) | {"google_lens", "saucenao", "ascii2d"}
+    names = set(aliases) | {"google_lens", "saucenao", "ascii2d", "soutubot"}
     token = "(?:" + "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True)) + r"|[0-9]+)"
     tail = match.group(1)
     if re.fullmatch(token + r"(?:(?:[\s,，、]+|\s*和\s*)" + token + ")*", tail,
@@ -91,7 +93,7 @@ def parse_tool_channels(text: str, aliases: dict[str, str]) -> str | None:
 
 def has_channel_reference(text: str, aliases: dict[str, str]) -> bool:
     """Detect unresolved channel mentions, never infer a selection from them."""
-    names = set(aliases) | {"google_lens", "saucenao", "ascii2d"}
+    names = set(aliases) | {"google_lens", "saucenao", "ascii2d", "soutubot"}
     for name in names:
         escaped = re.escape(name)
         if re.fullmatch(r"[a-z]", name, re.IGNORECASE):

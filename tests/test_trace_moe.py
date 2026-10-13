@@ -37,10 +37,18 @@ class TraceMoeProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(safe_failure_reason(error.exception), "请求超时")
 
     async def test_filtered_candidate_preserves_quota_signal(self):
-        http = FakeHttpClient(JsonResponse(200, {"result": [{"filename": "scene", "similarity": 0.5}]}))
+        http = FakeHttpClient(JsonResponse(200, {"result": [{"filename": "scene", "similarity": 0.49}]}))
         outcome = await TraceMoeProvider(http).search(ImageAsset(url="https://img.test/a"), SearchMode.ANIME)
         self.assertEqual(outcome.matches, [])
-        self.assertEqual(outcome.filtered_below, 85)
+        self.assertEqual(outcome.filtered_below, 50)
+
+    async def test_default_threshold_includes_exactly_fifty_percent(self):
+        http = FakeHttpClient(JsonResponse(200, {"result": [
+            {"filename": "included", "similarity": 0.5},
+            {"filename": "filtered", "similarity": 0.49},
+        ]}))
+        outcome = await TraceMoeProvider(http).search(ImageAsset(url="https://img.test/a"), SearchMode.ANIME)
+        self.assertEqual([match.title for match in outcome.matches], ["included"])
 
     async def test_parses_anilist_scene_result(self) -> None:
         http = FakeHttpClient(

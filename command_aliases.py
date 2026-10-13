@@ -4,19 +4,20 @@ from __future__ import annotations
 
 import re
 
-_CHANNELS = {"google_lens", "saucenao", "ascii2d"}
+_CHANNELS = {"google_lens", "saucenao", "ascii2d", "soutubot"}
 _BUILTINS = {
     "google": "google_lens",
     "lens": "google_lens",
     "sauce": "saucenao",
     "2d": "ascii2d",
+    "搜本": "soutubot",
 }
 
 
 def build_channel_aliases(providers: object) -> tuple[dict[str, str], int]:
     """Read each service's alias list; builtin routing cannot be overridden."""
     aliases = dict(_BUILTINS)
-    defaults = {"google_lens": ["g", "谷歌"], "saucenao": ["s"], "ascii2d": ["a"]}
+    defaults = {"google_lens": ["g", "谷歌"], "saucenao": ["s"], "ascii2d": ["a"], "soutubot": []}
     if not isinstance(providers, dict):
         providers = {}
     invalid = 0

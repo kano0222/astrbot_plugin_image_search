@@ -20,6 +20,13 @@ def tool_description(
     ]
     if source_names:
         parts.append("Enabled source services: " + ", ".join(source_names) + ".")
+        if "soutubot" in source_names:
+            parts.append(
+                "Soutubot searches all its source libraries, including manga and illustrations. "
+                "It requires explicit user selection (soutubot or 搜本); never add it to default search."
+            )
+            if not set(source_names) & {"saucenao", "ascii2d", "google_lens"}:
+                parts.append("No default source channels are enabled; ask for an explicit channel selection.")
         parts.append(
             "auto uses the conditional source search plan; source searches image "
             "provenance only. Enabled services are candidates, not all called "

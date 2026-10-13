@@ -32,6 +32,199 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         await self.plugin.terminate()
 
+    async def test_debug_logging_defaults_off_and_keeps_summary_and_warnings(self):
+        self.assertFalse(self.plugin._debug_logging)
+        self.assertFalse(self.plugin._delivery._debug_logging)
+        self.plugin._service.search = AsyncMock(return_value=SearchResponse(
+            matches=[SourceMatch("saucenao", "private-title")],
+            attempted_providers=["saucenao", "ascii2d"], failed_providers=["ascii2d"],
+            failure_details={"ascii2d": "请求超时"},
+            diagnostics={"saucenao": ["safe-diagnostic"]},
+        ))
+        self.plugin._delivery.try_send = AsyncMock(return_value=True)
+        event = self._simple_event("搜图", [Image(file="https://private.example/image")])
+        for enabled in (False, True):
+            self.plugin._debug_logging = enabled
+            with patch(ImageSearchPlugin.__module__ + ".logger.info") as info, patch(
+                ImageSearchPlugin.__module__ + ".logger.warning"
+            ) as warning:
+                _ = [r async for r in self.plugin.search_image_command(event, "")]
+            lines = [call.args[0] for call in info.call_args_list]
+            self.assertTrue(any("请求完成" in line for line in lines))
+            warning.assert_called_once()
+            self.assertEqual(any("URL指纹=" in line for line in lines), enabled)
+            self.assertEqual(any("safe-diagnostic" in line for line in lines), enabled)
+            if not enabled:
+                self.assertEqual(len(lines), 1)
+            self.assertNotIn("private", "\n".join(lines))
+
+    async def test_debug_logging_config_reaches_result_delivery(self):
+        await self.plugin.terminate()
+        self.plugin = ImageSearchPlugin(None, {**self.plugin._config, "debug_logging": True})
+        self.assertTrue(self.plugin._debug_logging)
+        self.assertTrue(self.plugin._delivery._debug_logging)
+
+    async def test_anime_threshold_default_and_explicit_config(self):
+        from ..core.http import JsonResponse
+        for configured, expected in ((None, ["scene"]), (80, [])):
+            await self.plugin.terminate()
+            trace = {"enabled": True}
+            if configured is not None:
+                trace["min_similarity"] = configured
+            self.plugin = ImageSearchPlugin(None, {
+                "cache": {"enabled": False}, "providers": {
+                    "saucenao": {"enabled": False}, "ascii2d": {"enabled": False},
+                    "google_lens": {"enabled": False}, "trace_moe": trace,
+                },
+            })
+            self.plugin._get_image_url = AsyncMock(return_value=("https://img.test/scene", None))
+            self.plugin._delivery.try_send = AsyncMock(return_value=True)
+            self.plugin._http.get_json = AsyncMock(return_value=JsonResponse(200, {
+                "result": [{"filename": "scene", "similarity": 0.5}],
+            }))
+            _ = [r async for r in self.plugin.search_anime_command(self._simple_event("搜番"))]
+            response = self.plugin._delivery.try_send.await_args.args[1]
+            self.assertEqual([match.title for match in response.matches], expected)
+            if configured is not None:
+                self.assertEqual(response.filtered_providers, {"trace_moe": 80})
+
+    async def _use_book_config(self, *, enabled=True, only_book=False):
+        await self.plugin.terminate()
+        self.plugin = ImageSearchPlugin(None, {
+            "cache": {"enabled": False},
+            "providers": {
+                "soutubot": {"enabled": enabled},
+                "saucenao": {"enabled": not only_book, "api_key": "test"},
+                "google_lens": {"enabled": False}, "ascii2d": {"enabled": False},
+                "trace_moe": {"enabled": False},
+            },
+        })
+        self.plugin._get_image_url = AsyncMock(return_value=("https://example.org/image", None))
+        self.plugin._delivery.try_send = AsyncMock(return_value=True)
+        from ..core.models import ProviderOutcome
+        for provider in self.plugin._service._source_providers:
+            provider.search = AsyncMock(return_value=ProviderOutcome(matches=[
+                SourceMatch(provider=provider.name, title="Candidate", url="https://example.org/" + provider.name)
+            ]))
+
+    async def test_book_command_and_refresh_use_explicit_channel(self):
+        self.assertNotIn("soutubot", self.plugin._service.source_provider_names)
+        await self._use_book_config()
+        event = self._simple_event("搜本 -purge")
+        _ = [item async for item in self.plugin.search_book_command(event, "-purge")]
+        sauce, book = self.plugin._service._source_providers
+        sauce.search.assert_not_awaited()
+        book.search.assert_awaited_once()
+        self.assertTrue(book.search.await_args.args[0].refresh)
+
+    async def test_book_tool_channels_ignore_model_and_quoted_text(self):
+        await self._use_book_config()
+        sauce, book = self.plugin._service._source_providers
+        for text, supplied, expected in (("帮我搜本", "saucenao", "soutubot"),
+                                          ("找下出处", "soutubot -purge", "saucenao")):
+            sauce.search.reset_mock()
+            book.search.reset_mock()
+            event = self._simple_event(text, [Reply(id="quoted", text="搜本")])
+            response = json.loads(await self.plugin.tool_search_image(event, "source", supplied))
+            self.assertEqual(response["attempted_providers"], [expected])
+            self.assertEqual(book.search.await_count, int(expected == "soutubot"))
+            selected = book if expected == "soutubot" else sauce
+            self.assertFalse(selected.search.await_args.args[0].refresh)
+
+    async def test_book_disabled_never_falls_back_or_waits_for_image(self):
+        await self._use_book_config(enabled=False)
+        self.plugin._resolve_image_request = AsyncMock()
+        output = [item async for item in self.plugin.search_book_command(self._simple_event("搜本"))]
+        self.assertIn("渠道不可用", output[0])
+        self.plugin._resolve_image_request.assert_not_awaited()
+        self.plugin._service._source_providers[0].search.assert_not_awaited()
+
+    async def test_only_book_rejects_default_but_allows_explicit_session(self):
+        await self._use_book_config(only_book=True)
+        event = self._simple_event("搜图")
+        output = [item async for item in self.plugin.search_image_command(event, "")]
+        self.assertIn("没有可用的默认搜图渠道", output[0])
+        output = [item async for item in self.plugin.search_mode_command(event, "")]
+        self.assertIn("没有可用的默认搜图渠道", output[0])
+        output = [item async for item in self.plugin.search_mode_command(event, "soutubot")]
+        self.assertIn("已进入搜图模式", output[0])
+
+    async def test_book_natural_request_routes_without_model(self):
+        await self._use_book_config()
+        event = self._simple_event("请帮我搜本")
+        await self.plugin.route_simple_search(event, None)
+        self.assertTrue(event.is_stopped())
+        sauce, book = self.plugin._service._source_providers
+        sauce.search.assert_not_awaited()
+        book.search.assert_awaited_once()
+
+    async def test_book_partial_and_warning_results_are_not_cached(self):
+        from ..core.providers.soutubot import SoutubotProvider
+        from ..core.http import JsonResponse
+        await self._use_book_config(only_book=True)
+        self.plugin._cache_enabled = True
+        http = AsyncMock()
+        self.plugin._service._source_providers = (SoutubotProvider(http),)
+        body = {"status": "ok", "partial": False, "api_results": [{"status": "ok"}],
+                "results": [
+                    {"score": 90-page, "path_segments": [{"links": {"page_url": f"https://example.org/page/{page}"}}]}
+                    for page in (1, 2, 3)
+                ] + [{"score": 70, "path_segments": [{"source_key": "nhentai", "external_id": "4"}]}]}
+        for extra in ({"partial": True}, {"warnings": ["diagnostic"]},
+                      {"api_results": [{"status": "ok"}, {"status": "error"}]},
+                      {"results": body["results"] + [{"score": "bad", "path_segments": []}]}):
+            http.upload_image_json.return_value = JsonResponse(200, {**body, **extra})
+            http.upload_image_json.reset_mock()
+            for _ in range(2):
+                event = self._simple_event("搜本")
+                _ = [r async for r in self.plugin.search_book_command(event)]
+                response = self.plugin._delivery.try_send.await_args.args[1]
+                self.assertEqual(len(response.matches), 3)
+                self.assertTrue(response.notices)
+            self.assertEqual(http.upload_image_json.await_count, 2)
+        http.upload_image_json.return_value = JsonResponse(200, body)
+        http.upload_image_json.reset_mock()
+        for _ in range(2):
+            _ = [r async for r in self.plugin.search_book_command(self._simple_event("搜本"))]
+        http.upload_image_json.assert_awaited_once()
+
+    async def test_book_waiting_image_and_continuous_mode_keep_channel(self):
+        await self._use_book_config()
+        del self.plugin._get_image_url
+        output = self.plugin.search_book_command(self._simple_event("搜本 -purge"), "-purge")
+        self.assertIn("发送图片", await anext(output))
+        later = self._simple_event("", [Image(file="https://img.test/book")])
+        await self.plugin.capture_waiting_image(later)
+        _ = [r async for r in output]
+        sauce, book = self.plugin._service._source_providers
+        book.search.assert_awaited_once()
+        self.assertTrue(book.search.await_args.args[0].refresh)
+        _ = [r async for r in self.plugin.search_mode_command(self._simple_event("搜图模式 soutubot"), "soutubot")]
+        await self.plugin.capture_waiting_image(self._simple_event("", [Image(file="https://img.test/next")]))
+        self.assertEqual(book.search.await_count, 2)
+        sauce.search.assert_not_awaited()
+
+    async def test_book_warning_diagnostics_reach_request_log_without_raw_payload(self):
+        from ..core.providers.soutubot import SoutubotProvider
+        from ..core.http import JsonResponse
+        await self._use_book_config(only_book=True)
+        http = AsyncMock()
+        http.upload_image_json.return_value = JsonResponse(200, {
+            "status": "ok", "partial": False, "api_results": [{"status": "ok"}],
+            "warnings": [{"code": "no_search_features", "message": "private-payload"}],
+            "results": [{"score": 90, "path_segments": [{"page_url": "https://example.org/page/1"}]}],
+        })
+        self.plugin._service._source_providers = (SoutubotProvider(http),)
+        self.plugin._debug_logging = True
+        with patch(ImageSearchPlugin.__module__ + ".logger.info") as log:
+            _ = [r async for r in self.plugin.search_book_command(self._simple_event("搜本"))]
+        lines = [call.args[0] for call in log.call_args_list]
+        diagnostic = next(line for line in lines if "渠道诊断 soutubot" in line)
+        self.assertIn("id=", diagnostic)
+        self.assertIn("codes=no_search_features", diagnostic)
+        self.assertIn("partial=False libraries=1 failed=0", diagnostic)
+        self.assertNotIn("private-payload", "\n".join(lines))
+
     def _simple_event(self, text, components=()):
         state = {"stopped": False}
         def stop():
@@ -142,6 +335,7 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_search_mode_disabled_and_opening_text_and_logs(self):
         event = self._simple_event("搜图模式")
+        self.plugin._debug_logging = True
         with patch(self.plugin.__module__ + ".logger.info") as log:
             replies = [r async for r in self.plugin.search_mode_command(event, "")]
         self.assertEqual(replies[0], "已进入搜图模式（默认渠道）。\n请发送图片吧！支持批量！60 秒内无动作将自动退出，发送「退出」可提前结束搜图模式。")
@@ -498,6 +692,7 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         ))
         self.plugin._delivery.try_send = AsyncMock(return_value=True)
         event = self._simple_event("搜图", [Image(file="https://private.example/image?secret=key")])
+        self.plugin._debug_logging = True
         with patch(ImageSearchPlugin.__module__ + ".logger.info") as log:
             _ = [r async for r in self.plugin.search_image_command(event, "g")]
         messages = [str(call.args[0]) for call in log.call_args_list]
@@ -527,6 +722,7 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
                              ("https://private.example/image?secret=2", ""),
                              ("https://private.example/image?secret=1", "-purge")):
             event = self._simple_event("搜图", [Image(file=url)])
+            self.plugin._debug_logging = True
             with patch(ImageSearchPlugin.__module__ + ".logger.info") as log:
                 _ = [r async for r in self.plugin.search_image_command(event, options)]
             snapshots.append("\n".join(str(call.args[0]) for call in log.call_args_list))
@@ -1060,6 +1256,7 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
             (self._tool_request(), "插件检查通过"),
         ]
         for req, status in cases:
+            self.plugin._debug_logging = True
             with patch(f"{ImageSearchPlugin.__module__}.logger.info") as log:
                 await self.plugin.filter_llm_tools(image_event, req)
                 log.assert_called_once()
