@@ -15,14 +15,14 @@ class ResultDelivery:
     def __init__(
         self, *, merged_forward_threshold: int = 2, show_thumbnails: bool = True,
         max_preview_images: int = 6, proxy_url: str = "", user_agent: str = "",
-        debug_logging: bool = False,
+        debug_enabled: bool = False,
     ) -> None:
         if (isinstance(merged_forward_threshold, bool)
                 or not isinstance(merged_forward_threshold, int)
                 or not 0 <= merged_forward_threshold <= 10):
             raise ValueError("merged_forward_threshold must be between zero and ten")
         self._merged_forward_threshold = merged_forward_threshold
-        self._debug_logging = debug_logging
+        self._debug_enabled = debug_enabled
         self._show_thumbnails = show_thumbnails
         self._max_images = max(1, min(20, max_preview_images))
         self._images = PreviewImageLoader(proxy_url=proxy_url, user_agent=user_agent)
@@ -57,7 +57,7 @@ class ResultDelivery:
         images = await self._load_images(cards, group_sizes) if self._show_thumbnails else {}
         if not forward and not images:
             return False
-        if self._debug_logging:
+        if self._debug_enabled:
             logger.info(
                 f"[ImageSearch] {log_context} 结果发送 "
                 f"类型={'合并转发' if forward else '普通图文'} "

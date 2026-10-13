@@ -3,7 +3,7 @@
   <img src="logo.png" alt="搜图插件 Logo" width="200" />
   <br>
   <br>
-  <a href="https://github.com/kano0222/astrbot_plugin_image_search/releases"><img alt="Version" src="https://img.shields.io/badge/version-1.1.0-blue?style=for-the-badge" /></a>
+  <a href="https://github.com/kano0222/astrbot_plugin_image_search/releases"><img alt="Version" src="https://img.shields.io/badge/version-1.1.1-blue?style=for-the-badge" /></a>
   <a href="https://github.com/Soulter/AstrBot"><img alt="AstrBot" src="https://img.shields.io/badge/AstrBot-plugin-green?style=for-the-badge" /></a>
   <a href="https://github.com/kano0222/astrbot_plugin_image_search"><img alt="Last Commit" src="https://img.shields.io/github/last-commit/kano0222/astrbot_plugin_image_search?style=for-the-badge" /></a>
   <br>

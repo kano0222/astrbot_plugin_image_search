@@ -140,7 +140,7 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             thumbnail_url="https://images.test/shared")], notices=["诊断提示"])
         results = [BatchResult(1, single), BatchResult(2, single)]
         self.delivery._merged_forward_threshold = 3
-        self.delivery._debug_logging = True
+        self.delivery._debug_enabled = True
         with patch(ResultDelivery.__module__ + ".logger.info") as log:
             self.assertTrue(await self.delivery.try_send_batch(event(), results, log_context="id=example"))
         message = log.call_args.args[0]
@@ -148,8 +148,8 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("类型=普通图文", message)
         self.assertIn("结果=2 普通消息=2 门槛=3 卡片=4 缩略图=2 消息=2", message)
 
-    async def test_delivery_debug_logging_is_off_by_default(self):
-        self.assertFalse(self.delivery._debug_logging)
+    async def test_delivery_debug_is_off_by_default(self):
+        self.assertFalse(self.delivery._debug_enabled)
         response = SearchResponse(matches=[SourceMatch("google_lens", "Art",
             thumbnail_url="https://images.test/shared")])
         with patch(ResultDelivery.__module__ + ".logger.info") as log:

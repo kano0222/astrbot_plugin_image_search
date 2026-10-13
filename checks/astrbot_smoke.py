@@ -32,9 +32,9 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         await self.plugin.terminate()
 
-    async def test_debug_logging_defaults_off_and_keeps_summary_and_warnings(self):
-        self.assertFalse(self.plugin._debug_logging)
-        self.assertFalse(self.plugin._delivery._debug_logging)
+    async def test_debug_defaults_off_and_keeps_summary_and_warnings(self):
+        self.assertFalse(self.plugin._debug_enabled)
+        self.assertFalse(self.plugin._delivery._debug_enabled)
         self.plugin._service.search = AsyncMock(return_value=SearchResponse(
             matches=[SourceMatch("saucenao", "private-title")],
             attempted_providers=["saucenao", "ascii2d"], failed_providers=["ascii2d"],
@@ -44,7 +44,7 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         self.plugin._delivery.try_send = AsyncMock(return_value=True)
         event = self._simple_event("搜图", [Image(file="https://private.example/image")])
         for enabled in (False, True):
-            self.plugin._debug_logging = enabled
+            self.plugin._debug_enabled = enabled
             with patch(ImageSearchPlugin.__module__ + ".logger.info") as info, patch(
                 ImageSearchPlugin.__module__ + ".logger.warning"
             ) as warning:
@@ -58,11 +58,11 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(lines), 1)
             self.assertNotIn("private", "\n".join(lines))
 
-    async def test_debug_logging_config_reaches_result_delivery(self):
+    async def test_debug_config_reaches_result_delivery(self):
         await self.plugin.terminate()
-        self.plugin = ImageSearchPlugin(None, {**self.plugin._config, "debug_logging": True})
-        self.assertTrue(self.plugin._debug_logging)
-        self.assertTrue(self.plugin._delivery._debug_logging)
+        self.plugin = ImageSearchPlugin(None, {**self.plugin._config, "debug": {"enabled": True}})
+        self.assertTrue(self.plugin._debug_enabled)
+        self.assertTrue(self.plugin._delivery._debug_enabled)
 
     async def test_anime_threshold_default_and_explicit_config(self):
         from ..core.http import JsonResponse
@@ -215,7 +215,7 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
             "results": [{"score": 90, "path_segments": [{"page_url": "https://example.org/page/1"}]}],
         })
         self.plugin._service._source_providers = (SoutubotProvider(http),)
-        self.plugin._debug_logging = True
+        self.plugin._debug_enabled = True
         with patch(ImageSearchPlugin.__module__ + ".logger.info") as log:
             _ = [r async for r in self.plugin.search_book_command(self._simple_event("搜本"))]
         lines = [call.args[0] for call in log.call_args_list]
@@ -335,7 +335,7 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_search_mode_disabled_and_opening_text_and_logs(self):
         event = self._simple_event("搜图模式")
-        self.plugin._debug_logging = True
+        self.plugin._debug_enabled = True
         with patch(self.plugin.__module__ + ".logger.info") as log:
             replies = [r async for r in self.plugin.search_mode_command(event, "")]
         self.assertEqual(replies[0], "已进入搜图模式（默认渠道）。\n请发送图片吧！支持批量！60 秒内无动作将自动退出，发送「退出」可提前结束搜图模式。")
@@ -683,6 +683,9 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_bounded_int(99, 2, 0, 10), 10)
         self.assertEqual(_bounded_int(True, 2, 0, 10), 2)
         self.assertEqual(schema["providers"]["items"]["ascii2d"]["description"], "Ascii2d")
+        self.assertIn("debug", schema)
+        self.assertNotIn("debug_logging", schema)
+        self.assertFalse(schema["debug"]["items"]["enabled"]["default"])
 
     async def test_search_logs_correlate_start_completion_and_rich_send(self):
         import re
@@ -692,7 +695,7 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         ))
         self.plugin._delivery.try_send = AsyncMock(return_value=True)
         event = self._simple_event("搜图", [Image(file="https://private.example/image?secret=key")])
-        self.plugin._debug_logging = True
+        self.plugin._debug_enabled = True
         with patch(ImageSearchPlugin.__module__ + ".logger.info") as log:
             _ = [r async for r in self.plugin.search_image_command(event, "g")]
         messages = [str(call.args[0]) for call in log.call_args_list]
@@ -722,7 +725,7 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
                              ("https://private.example/image?secret=2", ""),
                              ("https://private.example/image?secret=1", "-purge")):
             event = self._simple_event("搜图", [Image(file=url)])
-            self.plugin._debug_logging = True
+            self.plugin._debug_enabled = True
             with patch(ImageSearchPlugin.__module__ + ".logger.info") as log:
                 _ = [r async for r in self.plugin.search_image_command(event, options)]
             snapshots.append("\n".join(str(call.args[0]) for call in log.call_args_list))
@@ -1256,7 +1259,7 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
             (self._tool_request(), "插件检查通过"),
         ]
         for req, status in cases:
-            self.plugin._debug_logging = True
+            self.plugin._debug_enabled = True
             with patch(f"{ImageSearchPlugin.__module__}.logger.info") as log:
                 await self.plugin.filter_llm_tools(image_event, req)
                 log.assert_called_once()

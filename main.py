@@ -62,7 +62,8 @@ class ImageSearchPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
         super().__init__(context)
         self._config = _as_dict(config)
-        self._debug_logging = _as_bool(self._config.get("debug_logging"), False)
+        debug_config = _section(self._config, "debug")
+        self._debug_enabled = _as_bool(debug_config.get("enabled"), False)
         llm_config = _section(self._config, "llm")
         self._llm_tool_enabled = _as_bool(llm_config.get("enabled"), True)
         command_config = _section(self._config, "command")
@@ -116,7 +117,7 @@ class ImageSearchPlugin(Star):
             max_preview_images=min(20, _positive_int(output.get("max_preview_images"), 6)),
             proxy_url=str(network.get("proxy_url") or ""),
             user_agent=str(network.get("user_agent") or _DEFAULT_USER_AGENT),
-            debug_logging=self._debug_logging,
+            debug_enabled=self._debug_enabled,
         )
         self._source_pages = SourcePageClient(
             proxy_url=str(network.get("proxy_url") or ""),
@@ -244,7 +245,7 @@ class ImageSearchPlugin(Star):
             event.stop_event()
 
     def _debug_log(self, message: str) -> None:
-        if self._debug_logging:
+        if self._debug_enabled:
             logger.info(message)
 
     def _log_search_mode(self, key, action, **fields):

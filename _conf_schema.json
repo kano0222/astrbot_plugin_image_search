@@ -384,12 +384,18 @@
         "description": "User-Agent",
         "default": "AstrBot Image Search/0.1"
       }
-    },
-    "debug_logging": {
-      "type": "bool",
-      "description": "调试日志",
-      "default": false,
-      "hint": "开启详细流程日志，便于排查问题。"
+    }
+  },
+  "debug": {
+    "description": "调试",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用调试模式",
+        "default": false,
+        "hint": "开启后会打印更多日志，便于排查问题。"
+      }
     }
   }
 }
