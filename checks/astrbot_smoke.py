@@ -928,7 +928,9 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
                 event = self._simple_event(text, [Reply(id="quoted", text="搜图 g")])
                 req = self._tool_request()
                 await self.plugin.filter_llm_tools(event, req)
-                self.assertEqual(req.func_tool.get_tool("search_image").parameters["properties"]["channels"]["enum"], [""])
+                channels = req.func_tool.get_tool("search_image").parameters["properties"]["channels"]
+                self.assertNotIn("enum", channels)
+                self.assertEqual(channels["default"], "")
                 for provider in providers.values():
                     provider.search.reset_mock()
                 result = json.loads(await self.plugin.tool_search_image(event, "source", supplied))
@@ -970,7 +972,40 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         event = self._simple_event("找下出处", [Reply(text="搜一下谷歌", id="quoted")])
         request = self._tool_request()
         await self.plugin.filter_llm_tools(event, request)
-        self.assertEqual(request.func_tool.get_tool("search_image").parameters["properties"]["channels"]["enum"], [""])
+        channels = request.func_tool.get_tool("search_image").parameters["properties"]["channels"]
+        self.assertNotIn("enum", channels)
+        self.assertEqual(channels["default"], "")
+
+    async def test_gemini_tool_channels_have_no_empty_enum_values(self):
+        from google.genai import types
+
+        request = self._tool_request()
+        # Reuse the request to also check that explicit constraints do not leak.
+        for text, expected in (
+            ("找下出处", None),
+            ("搜一下谷歌", "谷歌"),
+            ("搜一下谷歌和SauceNAO", "谷歌 SauceNAO"),
+            ("找下出处", None),
+        ):
+            with self.subTest(text=text, expected=expected):
+                await self.plugin.filter_llm_tools(self._simple_event(text), request)
+                parameters = request.func_tool.get_tool("search_image").parameters
+                channels = parameters["properties"]["channels"]
+                self.assertEqual(channels["default"], expected or "")
+                self.assertIn("channels", parameters["required"])
+                # Same conversion and SDK Tool construction as Gemini's provider.
+                tool = types.Tool(**request.func_tool.google_schema())
+                declaration = next(
+                    item for item in tool.model_dump(exclude_none=True)["function_declarations"]
+                    if item["name"] == "search_image"
+                )
+                for schema in (parameters, declaration["parameters"]):
+                    channels = schema["properties"]["channels"]
+                    if expected is None:
+                        self.assertNotIn("enum", channels)
+                    else:
+                        self.assertEqual(channels["enum"], [expected])
+                    self.assertNotIn("", channels.get("enum", []))
 
     async def test_source_enrichment_shared_by_command_and_tool(self):
         from ..core.models import ProviderOutcome

@@ -1,6 +1,6 @@
 name: astrbot_plugin_image_search
 display_name: 搜图
 desc: 支持 SauceNAO、Google Lens、Ascii2d、trace.moe 和 Soutubot，支持自然语言使用。
-version: v1.1.1
+version: v1.1.2
 astrbot_version: ">=4.25,<5"
 author: kano0222

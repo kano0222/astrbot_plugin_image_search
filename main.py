@@ -559,7 +559,8 @@ class ImageSearchPlugin(Star):
                 ),
             }
             requested = self._requested_source_channels(event) or ""
-            tool.parameters["properties"]["channels"]["enum"] = [requested]
+            if requested:
+                tool.parameters["properties"]["channels"]["enum"] = [requested]
             tool.parameters["properties"]["channels"]["default"] = requested
             tool.parameters["properties"]["channels"]["description"] += (
                 " This value is fixed by the current user message. Do not select additional channels."
