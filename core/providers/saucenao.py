@@ -27,18 +27,13 @@ class SauceNaoProvider:
         http: JsonHttpClient,
         *,
         api_key: str = "",
-        mode: str = "api",
         web_http: WebHttpClient | None = None,
         max_results: int = 5,
         min_similarity: float = 60,
         timeout_seconds: float = 30,
     ) -> None:
         normalized_key = api_key.strip()
-        if mode not in {"api", "anonymous"}:
-            raise ValueError("unsupported SauceNAO mode")
-        if mode == "api" and not normalized_key:
-            raise ValueError("SauceNAO API key is required")
-        if mode == "anonymous" and web_http is None:
+        if not normalized_key and web_http is None:
             raise ValueError("anonymous SauceNAO requires a web HTTP client")
         if max_results <= 0:
             raise ValueError("max_results must be greater than zero")
@@ -49,7 +44,6 @@ class SauceNaoProvider:
 
         self._http = http
         self._api_key = normalized_key
-        self._mode = mode
         self._web_http = web_http
         self._max_results = max_results
         self._min_similarity = min_similarity
@@ -65,7 +59,7 @@ class SauceNaoProvider:
         if urlsplit(image_url).scheme.lower() not in {"http", "https"}:
             raise ProviderError("SauceNAO requires a public HTTP image URL")
 
-        if self._mode == "anonymous":
+        if not self._api_key:
             raw_results, malformed = await self._search_anonymous(image_url)
             outcome = self._select_results(raw_results)
             if malformed:

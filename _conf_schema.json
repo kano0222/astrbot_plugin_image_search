@@ -16,15 +16,8 @@
             "type": "string",
             "description": "API Key",
             "default": "",
-            "secret": true
-          },
-          "mode": {
-            "type": "string",
-            "description": "搜索模式",
-            "options": ["api", "anonymous"],
-            "labels": ["API", "匿名网页"],
-            "default": "api",
-            "hint": "API 模式需要 Key；匿名网页无需 Key，可能遇到限流或验证。两种模式不会自动互相切换。"
+            "secret": true,
+            "hint": "留空使用匿名网页搜索，填写后使用 API。匿名搜索可能遇到限流、人机验证或网页变化导致的结果解析不完整；API 返回结构更稳定。API 请求失败时不会自动改用匿名搜索。"
           },
           "aliases": {
             "type": "list",

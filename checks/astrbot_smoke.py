@@ -32,14 +32,15 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         await self.plugin.terminate()
 
-    async def test_sauce_modes_preserve_api_default_and_enable_anonymous_without_key(self):
-        for config, available, expected_mode in (
-            ({"api_key": "test"}, True, "api"),
-            ({}, False, None),
-            ({"mode": "anonymous"}, True, "anonymous"),
-            ({"mode": "anonymous", "api_key": "saved"}, True, "anonymous"),
-            ({"mode": "anonymous", "enabled": False}, False, None),
-            ({"mode": "invalid", "api_key": "test"}, False, None),
+    async def test_sauce_uses_key_presence_and_respects_disable(self):
+        from ..core.http import JsonResponse
+        from ..core.models import ImageAsset, SearchMode
+        from ..core.web import TextResponse
+        for config, available, use_api in (
+            ({"api_key": "test"}, True, True),
+            ({}, True, False),
+            ({"api_key": "  "}, True, False),
+            ({"enabled": False}, False, False),
         ):
             with self.subTest(config=config):
                 plugin = ImageSearchPlugin(None, {"cache": {"enabled": False},
@@ -48,8 +49,14 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
                     providers = {p.name: p for p in plugin._service._source_providers}
                     self.assertEqual("saucenao" in providers, available)
                     if available:
-                        self.assertEqual(providers["saucenao"]._mode, expected_mode)
-                        self.assertIs(providers["saucenao"]._web_http, plugin._web_http)
+                        plugin._http.get_json = AsyncMock(return_value=JsonResponse(
+                            200, {"header": {"status": 0}, "results": []}))
+                        plugin._web_http.post_form = AsyncMock(return_value=TextResponse(
+                            200, "https://saucenao.com/search.php", "No results found"))
+                        await providers["saucenao"].search(
+                            ImageAsset(url="https://image.test/a"), SearchMode.SOURCE)
+                        self.assertEqual(plugin._http.get_json.await_count, int(use_api))
+                        self.assertEqual(plugin._web_http.post_form.await_count, int(not use_api))
                 finally:
                     await plugin.terminate()
 
@@ -691,8 +698,8 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(keys[-1], "max_results")
         self.assertLess(keys.index("min_similarity"), keys.index("low_similarity_provider"))
         self.assertTrue(sauce["api_key"]["secret"])
-        self.assertEqual(sauce["mode"]["default"], "api")
-        self.assertEqual(sauce["mode"]["options"], ["api", "anonymous"])
+        self.assertNotIn("mode", sauce)
+        self.assertIn("留空", sauce["api_key"]["hint"])
         self.assertEqual(len(sauce["low_similarity_provider"]["labels"]),
                          len(sauce["low_similarity_provider"]["options"]))
         self.assertEqual(sauce["low_similarity_provider"]["options"], ["off", "Ascii2d", "google"])

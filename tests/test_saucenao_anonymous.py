@@ -28,7 +28,7 @@ class SauceAnonymousTests(unittest.IsolatedAsyncioTestCase):
         self.web.post_form.return_value = TextResponse(
             status, "https://saucenao.com/search.php", html,
         )
-        return SauceNaoProvider(self.http, mode="anonymous", web_http=self.web, **kwargs)
+        return SauceNaoProvider(self.http, web_http=self.web, **kwargs)
 
     async def search(self, provider):
         return await provider.search(ImageAsset(url="https://image.test/a?token=private"), SearchMode.AUTO)
@@ -37,7 +37,7 @@ class SauceAnonymousTests(unittest.IsolatedAsyncioTestCase):
         provider = self.provider(card(columns='''<strong>Member: </strong>
           <a href="https://www.pixiv.net/users/456">Artist</a><br>
           <strong>Source: </strong><a href="https://original.test/art">Original</a>'''),
-          api_key="saved-secret", timeout_seconds=12)
+          api_key="  ", timeout_seconds=12)
         outcome = await self.search(provider)
         match = outcome.matches[0]
         self.assertEqual(match.title, "Art & title")
@@ -56,7 +56,7 @@ class SauceAnonymousTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertEqual(call.kwargs["timeout_seconds"], 12)
         self.assertEqual(call.kwargs["cookies"], {})
-        self.assertNotIn("saved-secret", str(call))
+        self.assertNotIn("api_key", call.kwargs["data"])
         self.http.get_json.assert_not_awaited()
 
     async def test_score_belongs_to_each_card_and_threshold_is_inclusive(self):
@@ -149,7 +149,6 @@ class SauceAnonymousTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ProviderError, "unrecognized page"):
             await self.search(provider)
 
-    def test_invalid_modes_and_missing_web_client_are_rejected(self):
-        for kwargs in ({"mode": "unknown"}, {"mode": "anonymous"}):
-            with self.assertRaises(ValueError):
-                SauceNaoProvider(None, **kwargs)
+    def test_anonymous_requires_web_client(self):
+        with self.assertRaisesRegex(ValueError, "web HTTP client"):
+            SauceNaoProvider(None)
