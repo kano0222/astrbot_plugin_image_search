@@ -29,6 +29,21 @@ class FakeHttpClient:
 
 
 class SauceNaoProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_configured_key_uses_api_without_anonymous_fallback(self):
+        web = AsyncMock()
+        for status in (200, 401, 403, 429, 503):
+            with self.subTest(status=status):
+                http = FakeHttpClient(JsonResponse(
+                    status, {"header": {"status": 0}, "results": []}))
+                provider = SauceNaoProvider(http, api_key=" key ", web_http=web)
+                if status == 200:
+                    await provider.search(ImageAsset(url="https://image.test/a"), SearchMode.SOURCE)
+                else:
+                    with self.assertRaises(ProviderError):
+                        await provider.search(ImageAsset(url="https://image.test/a"), SearchMode.SOURCE)
+                self.assertEqual(http.calls[0][1]["api_key"], "key")
+                web.post_form.assert_not_awaited()
+
     async def test_parses_source_result_and_signals_anime_database(self) -> None:
         http = FakeHttpClient(
             JsonResponse(
@@ -148,8 +163,8 @@ class SauceNaoProviderTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SauceNaoConfigurationTests(unittest.TestCase):
-    def test_requires_api_key(self) -> None:
-        with self.assertRaisesRegex(ValueError, "API key"):
+    def test_empty_key_requires_web_client(self) -> None:
+        with self.assertRaisesRegex(ValueError, "web HTTP client"):
             SauceNaoProvider(
                 FakeHttpClient(JsonResponse(200, {})),
                 api_key=" ",

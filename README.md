@@ -36,7 +36,7 @@
 
 | 渠道        | 需要填写                                                            |
 | ----------- | ------------------------------------------------------------------- |
-| SauceNAO    | [API Key](https://saucenao.com/user.php)                            |
+| SauceNAO    | 可选 [API Key](https://saucenao.com/user.php)，留空使用匿名网页搜索 |
 | Google Lens | [SerpAPI API Key](https://serpapi.com/manage-api-key)，支持多个 Key |
 | Ascii2d     | 可选的 `_session_id`、`cf_clearance` Cookie                         |
 | trace.moe   | 可选 Token，留空使用匿名额度                                        |

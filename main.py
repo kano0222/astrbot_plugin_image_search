@@ -133,18 +133,17 @@ class ImageSearchPlugin(Star):
 
         sauce = _section(providers, "saucenao")
         sauce_key = str(sauce.get("api_key") or "").strip()
-        if _as_bool(sauce.get("enabled"), True) and sauce_key:
+        if _as_bool(sauce.get("enabled"), True):
             source_providers.append(
                 SauceNaoProvider(
                     self._http,
                     api_key=sauce_key,
+                    web_http=self._web_http,
                     max_results=_positive_int(sauce.get("max_results"), 5),
                     min_similarity=_percentage_value(sauce.get("min_similarity"), 60),
                     timeout_seconds=self._timeout_seconds,
                 )
             )
-        elif _as_bool(sauce.get("enabled"), True):
-            logger.warning("[ImageSearch] 未配置 SauceNAO API Key，该服务未启用")
 
         google = _section(providers, "google_lens")
         serpapi_keys = google.get("serpapi_keys")

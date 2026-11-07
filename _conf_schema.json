@@ -16,7 +16,8 @@
             "type": "string",
             "description": "API Key",
             "default": "",
-            "secret": true
+            "secret": true,
+            "hint": "留空使用匿名网页搜索，填写后使用 API。匿名搜索可能遇到限流、人机验证或网页变化导致的结果解析不完整；API 返回结构更稳定。API 请求失败时不会自动改用匿名搜索。"
           },
           "aliases": {
             "type": "list",
