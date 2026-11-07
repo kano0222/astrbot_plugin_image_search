@@ -12,7 +12,7 @@ from ..http import JsonHttpClient
 from ..models import ImageAsset, ProviderOutcome, SearchMode, SourceMatch
 from ..provider import ProviderError
 from ..web import WebHttpClient
-from .saucenao_html import parse_anonymous_results
+from .saucenao_html import MAX_HTML_BYTES, _pixiv_post_id, parse_anonymous_results
 
 
 class SauceNaoProvider:
@@ -121,6 +121,8 @@ class SauceNaoProvider:
                          "Referer": "https://saucenao.com/"},
                 cookies={},
                 timeout_seconds=self._timeout_seconds,
+                allow_redirects=False,
+                max_response_bytes=MAX_HTML_BYTES,
             )
         except (asyncio.TimeoutError, TimeoutError) as exc:
             raise ProviderError("SauceNAO request timed out") from exc
@@ -258,16 +260,6 @@ def _source_page_url(value: str) -> str:
         match = re.search(r"/(\d+)(?:_p\d+)?(?:\.[a-zA-Z0-9]+)?$", parsed.path)
         return f"https://www.pixiv.net/artworks/{match.group(1)}" if match else ""
     return value
-
-
-def _pixiv_post_id(url: str) -> int | None:
-    parsed = urlsplit(url)
-    if parsed.hostname not in {"pixiv.net", "www.pixiv.net"}:
-        return None
-    match = re.fullmatch(r"/(?:[a-z]{2}/)?artworks/(\d+)/?", parsed.path)
-    if match is None:
-        match = re.fullmatch(r"/i/(\d+)/?", parsed.path)
-    return int(match.group(1)) if match else None
 
 
 def _first_text(values: Mapping[object, object], *keys: str) -> str:

@@ -85,15 +85,41 @@ class CurlCffiWebClient:
         headers: Mapping[str, str],
         cookies: Mapping[str, str],
         timeout_seconds: float,
+        allow_redirects: bool = True,
+        max_response_bytes: int | None = None,
     ) -> TextResponse:
+        if max_response_bytes is not None and max_response_bytes <= 0:
+            raise ValueError("max_response_bytes must be positive")
         session = await self._get_session(url=url, cookies=cookies)
-        response = await session.post(
-            url,
-            data=dict(data),
-            headers=dict(headers),
-            timeout=timeout_seconds,
-            allow_redirects=True,
-        )
+        content = bytearray()
+        oversized = False
+
+        def receive(chunk: bytes) -> int:
+            nonlocal oversized
+            if len(content) + len(chunk) > max_response_bytes:
+                oversized = True
+                return CURL_WRITEFUNC_ERROR
+            content.extend(chunk)
+            return len(chunk)
+
+        options = {"content_callback": receive} if max_response_bytes is not None else {}
+        try:
+            response = await session.post(
+                url,
+                data=dict(data),
+                headers=dict(headers),
+                timeout=timeout_seconds,
+                allow_redirects=allow_redirects,
+                **options,
+            )
+        except Exception as exc:
+            if oversized:
+                raise ProviderError("HTML response exceeds size limit") from exc
+            raise
+        if oversized:
+            raise ProviderError("HTML response exceeds size limit")
+        if max_response_bytes is not None:
+            response.content = bytes(content)
         return TextResponse(
             status=response.status_code,
             url=str(response.url),

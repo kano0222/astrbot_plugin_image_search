@@ -6,9 +6,27 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 import math
 import re
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 from ..provider import ProviderError
+
+MAX_HTML_BYTES = 2 * 1024 * 1024
+_INDEX_NAMES = {5: "pixiv Images", 21: "Anime", 23: "Movies", 24: "Shows"}
+_BLOCK_TAGS = {"div", "p", "li", "ul", "ol", "dl", "dt", "dd", "tr", "td", "section"}
+
+
+def _pixiv_post_id(url: str) -> int | None:
+    parsed = urlsplit(url)
+    if parsed.hostname not in {"pixiv.net", "www.pixiv.net"}:
+        return None
+    match = re.fullmatch(r"/(?:[a-z]{2}/)?(?:artworks|i)/([0-9]+)/?", parsed.path)
+    if match:
+        return int(match[1])
+    if parsed.path == "/member_illust.php":
+        values = parse_qs(parsed.query).get("illust_id", [])
+        if len(values) == 1 and re.fullmatch(r"[0-9]+", values[0]):
+            return int(values[0])
+    return None
 
 
 @dataclass
@@ -20,10 +38,11 @@ class _Node:
     def text(self, *, exclude_results: bool = False) -> str:
         if exclude_results and "result" in (self.attrs.get("class") or "").split():
             return ""
-        return "".join(
+        text = "".join(
             child.text(exclude_results=exclude_results) if isinstance(child, _Node) else child
             for child in self.children
         )
+        return f"\n{text}\n" if self.tag in _BLOCK_TAGS else text
 
     def find(self, *, css_class: str = "", tag: str = "") -> list[_Node]:
         found = []
@@ -47,8 +66,12 @@ class _ResultPage(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.root = _Node("root")
         self.stack = [self.root]
+        self.node_count = 0
 
     def handle_starttag(self, tag, attrs):
+        self.node_count += 1
+        if self.node_count > 20000 or len(self.stack) >= 128:
+            raise ProviderError("SauceNAO result page exceeds parsing limits")
         if tag == "br":
             self.stack[-1].children.append("\n")
             return
@@ -132,22 +155,41 @@ def _parse_card(card: _Node) -> dict | None:
     images = [image for node in card.find(css_class="resultimage") for image in node.find(tag="img")]
     thumbnail = _url(images[0].attrs.get("src") or "") if images else ""
     index_id = None
-    # Infer only from explicit source identities, never from a guessed title.
-    if any(urlsplit(url).hostname in {"pixiv.net", "www.pixiv.net"}
-           and re.match(r"/(?:[a-z]{2}/)?(?:artworks/|i/)\d+", urlsplit(url).path)
-           for url in urls):
-        index_id = 5
-    elif any(urlsplit(url).hostname in {"anidb.net", "www.anidb.net"} for url in urls):
-        index_id = 21
+    # SauceNAO's own thumbnail path carries the database identity, including
+    # Movies/Shows. An IMDb/TMDB host alone does not identify that database.
+    image_url = urlsplit(thumbnail)
+    if image_url.hostname and (image_url.hostname == "saucenao.com"
+                               or image_url.hostname.endswith(".saucenao.com")):
+        index = re.match(r"/res/([0-9]{1,3})/", image_url.path)
+        if index:
+            index_id = int(index[1])
+    if index_id is None:
+        # An explicit per-card database link is authoritative even when the
+        # thumbnail uses a non-numeric image-cache path.
+        for anchor in card.find(tag="a"):
+            link = urlsplit(_url(anchor.attrs.get("href") or ""))
+            if link.hostname not in {"saucenao.com", "www.saucenao.com"} or link.path != "/search.php":
+                continue
+            values = parse_qs(link.query).get("db", [])
+            if len(values) == 1 and re.fullmatch(r"[0-9]{1,2}", values[0]):
+                index_id = int(values[0])
+                break
+    if index_id is None:
+        if any(_pixiv_post_id(url) is not None for url in urls):
+            index_id = 5
+        elif any(urlsplit(url).hostname in {"anidb.net", "www.anidb.net"} for url in urls):
+            index_id = 21
     return {
         "header": {"similarity": score[1], "index_id": index_id,
-                   "thumbnail": thumbnail, "index_name": ""},
+                   "thumbnail": thumbnail, "index_name": _INDEX_NAMES.get(index_id, "")},
         "data": {"title": title, "source": source, "ext_urls": urls,
                  "author_name": author, "author_url": author_url},
     }
 
 
 def parse_anonymous_results(html: str) -> tuple[list[dict], bool]:
+    if len(html) > MAX_HTML_BYTES or len(html.encode("utf-8")) > MAX_HTML_BYTES:
+        raise ProviderError("HTML response exceeds size limit")
     page = _ResultPage()
     page.feed(html)
     page.close()

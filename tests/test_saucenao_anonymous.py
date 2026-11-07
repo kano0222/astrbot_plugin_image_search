@@ -7,13 +7,14 @@ from unittest.mock import AsyncMock
 from core.models import ImageAsset, SearchMode
 from core.provider import ProviderError, safe_failure_reason
 from core.providers.saucenao import SauceNaoProvider
+from core.providers.saucenao_html import MAX_HTML_BYTES, parse_anonymous_results
 from core.web import TextResponse
 
 
 def card(score="95.2", title="Art &amp; title", url="https://www.pixiv.net/artworks/123",
-         columns='', misc=None):
+         columns='', misc=None, thumbnail='/thumb.jpg'):
     return f'''<div id="res0" class="result hidden">
-      <div class="resultimage"><img src="/res/5/thumb.jpg"></div>
+      <div class="resultimage"><img src="{thumbnail}"></div>
       <div class="resulttable"><div class="resultsimilarityinfo">{score}%</div>
       <div class="resultcontent"><div class="resulttitle"><strong>{title}</strong></div>
       <div class="resultcontentcolumn">{columns}</div></div>
@@ -46,7 +47,7 @@ class SauceAnonymousTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(match.author, "Artist")
         self.assertEqual(match.author_url, "https://www.pixiv.net/users/456")
         self.assertEqual(match.source_url, "https://original.test/art")
-        self.assertEqual(match.thumbnail_url, "https://saucenao.com/res/5/thumb.jpg")
+        self.assertEqual(match.thumbnail_url, "https://saucenao.com/thumb.jpg")
         self.assertFalse(outcome.suggests_anime)
         call = self.web.post_form.await_args
         self.assertEqual(call.args, ("https://saucenao.com/search.php",))
@@ -56,6 +57,8 @@ class SauceAnonymousTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertEqual(call.kwargs["timeout_seconds"], 12)
         self.assertEqual(call.kwargs["cookies"], {})
+        self.assertFalse(call.kwargs["allow_redirects"])
+        self.assertEqual(call.kwargs["max_response_bytes"], MAX_HTML_BYTES)
         self.assertNotIn("api_key", call.kwargs["data"])
         self.http.get_json.assert_not_awaited()
 
@@ -80,6 +83,74 @@ class SauceAnonymousTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(outcome.suggests_anime, expected)
             self.assertEqual(outcome.low_accuracy, not expected)
             self.assertEqual(outcome.filtered_below, None if expected else 60)
+            if not expected:
+                self.assertEqual(outcome.matches, [])
+
+    async def test_block_fields_keep_author_and_source_separate(self):
+        columns = ('<div><strong>Author:</strong><a href="https://artist.test">Artist</a></div>'
+                   '<p><strong>Source:</strong><a href="https://original.test/art">Original</a></p>')
+        match = (await self.search(self.provider(card(columns=columns)))).matches[0]
+        self.assertEqual(match.author, "Artist")
+        self.assertEqual(match.author_url, "https://artist.test")
+        self.assertEqual(match.source_url, "https://original.test/art")
+
+    async def test_legacy_pixiv_preserves_preference_and_earlier_work_selection(self):
+        html = card('96', 'Mirror', 'https://danbooru.donmai.us/posts/1')
+        html += card('95', 'New', 'https://www.pixiv.net/member_illust.php?mode=medium&amp;illust_id=999')
+        html += card('92', 'Old', 'https://www.pixiv.net/member_illust.php?mode=medium&amp;illust_id=123')
+        match = (await self.search(self.provider(html))).matches[0]
+        self.assertEqual(match.title, 'Old')
+        self.assertIn('illust_id=123', match.url)
+        self.assertEqual(match.site_name, 'pixiv Images')
+
+    async def test_database_identity_restores_followup_and_index_label(self):
+        for database, label, url in (
+            (23, 'Movies', 'https://www.imdb.com/title/tt1234567/'),
+            (24, 'Shows', 'https://www.themoviedb.org/tv/123'),
+        ):
+            with self.subTest(database=database):
+                outcome = await self.search(self.provider(card(
+                    url=url, thumbnail=f'https://saucenao.com/res/{database}/thumb.jpg')))
+                self.assertTrue(outcome.suggests_anime)
+                self.assertEqual(outcome.matches[0].site_name, label)
+                # A third-party path or just an IMDb host is not database evidence.
+                outcome = await self.search(self.provider(card(
+                    url=url, thumbnail=f'https://untrusted.test/res/{database}/thumb.jpg')))
+                self.assertFalse(outcome.suggests_anime)
+                self.assertEqual(outcome.matches[0].site_name, '')
+
+    async def test_unidentified_database_does_not_invent_index_label(self):
+        outcome = await self.search(self.provider(card(
+            url='https://example.test/work', thumbnail='/res/999/thumb.jpg')))
+        self.assertEqual(outcome.matches[0].site_name, '')
+        self.assertFalse(outcome.suggests_anime)
+
+    async def test_explicit_database_link_with_non_numeric_thumbnail(self):
+        html = card(url='https://www.imdb.com/title/tt1234567/',
+                    thumbnail='https://img3.saucenao.com/booru/cache/thumb.jpg',
+                    misc='<a href="/search.php?db=24">Shows</a>'
+                         '<a href="https://www.imdb.com/title/tt1234567/">IMDb</a>')
+        outcome = await self.search(self.provider(html))
+        self.assertTrue(outcome.suggests_anime)
+        self.assertEqual(outcome.matches[0].site_name, 'Shows')
+        self.assertEqual(outcome.matches[0].url, 'https://www.imdb.com/title/tt1234567/')
+
+    async def test_redirect_response_is_failure_without_retry(self):
+        for status in (301, 302, 303, 307, 308):
+            with self.subTest(status=status):
+                with self.assertRaisesRegex(ProviderError, f'HTTP {status}'):
+                    await self.search(self.provider('', status=status))
+                self.assertEqual(self.web.post_form.await_count, 1)
+
+    async def test_oversized_mock_response_is_rejected_before_parsing(self):
+        for html in ('x' * (MAX_HTML_BYTES + 1), '图' * (MAX_HTML_BYTES // 3 + 1)):
+            with self.assertRaisesRegex(ProviderError, 'size limit'):
+                await self.search(self.provider(html))
+
+    def test_parser_limits_nodes_and_nesting(self):
+        for html in ('<div>' * 128, '<img>' * 20001):
+            with self.assertRaisesRegex(ProviderError, 'parsing limits'):
+                parse_anonymous_results(html)
 
     async def test_unrelated_links_and_author_link_are_not_sources(self):
         provider = self.provider('<a href="https://noise.test">navigation</a>' + card(

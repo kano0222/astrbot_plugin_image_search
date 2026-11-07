@@ -36,4 +36,6 @@ class WebHttpClient(Protocol):
         headers: Mapping[str, str],
         cookies: Mapping[str, str],
         timeout_seconds: float,
+        allow_redirects: bool = True,
+        max_response_bytes: int | None = None,
     ) -> TextResponse: ...
