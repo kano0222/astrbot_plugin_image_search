@@ -32,6 +32,27 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         await self.plugin.terminate()
 
+    async def test_sauce_modes_preserve_api_default_and_enable_anonymous_without_key(self):
+        for config, available, expected_mode in (
+            ({"api_key": "test"}, True, "api"),
+            ({}, False, None),
+            ({"mode": "anonymous"}, True, "anonymous"),
+            ({"mode": "anonymous", "api_key": "saved"}, True, "anonymous"),
+            ({"mode": "anonymous", "enabled": False}, False, None),
+            ({"mode": "invalid", "api_key": "test"}, False, None),
+        ):
+            with self.subTest(config=config):
+                plugin = ImageSearchPlugin(None, {"cache": {"enabled": False},
+                                                  "providers": {"saucenao": config}})
+                try:
+                    providers = {p.name: p for p in plugin._service._source_providers}
+                    self.assertEqual("saucenao" in providers, available)
+                    if available:
+                        self.assertEqual(providers["saucenao"]._mode, expected_mode)
+                        self.assertIs(providers["saucenao"]._web_http, plugin._web_http)
+                finally:
+                    await plugin.terminate()
+
     async def test_debug_defaults_off_and_keeps_summary_and_warnings(self):
         self.assertFalse(self.plugin._debug_enabled)
         self.assertFalse(self.plugin._delivery._debug_enabled)
@@ -670,6 +691,8 @@ class RuntimeSmokeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(keys[-1], "max_results")
         self.assertLess(keys.index("min_similarity"), keys.index("low_similarity_provider"))
         self.assertTrue(sauce["api_key"]["secret"])
+        self.assertEqual(sauce["mode"]["default"], "api")
+        self.assertEqual(sauce["mode"]["options"], ["api", "anonymous"])
         self.assertEqual(len(sauce["low_similarity_provider"]["labels"]),
                          len(sauce["low_similarity_provider"]["options"]))
         self.assertEqual(sauce["low_similarity_provider"]["options"], ["off", "Ascii2d", "google"])

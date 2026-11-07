@@ -1,4 +1,4 @@
-"""Image-source search through the SauceNAO JSON API."""
+"""Image-source search through the SauceNAO API or anonymous website."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 from ..http import JsonHttpClient
 from ..models import ImageAsset, ProviderOutcome, SearchMode, SourceMatch
 from ..provider import ProviderError
+from ..web import WebHttpClient
+from .saucenao_html import parse_anonymous_results
 
 
 class SauceNaoProvider:
@@ -24,14 +26,20 @@ class SauceNaoProvider:
         self,
         http: JsonHttpClient,
         *,
-        api_key: str,
+        api_key: str = "",
+        mode: str = "api",
+        web_http: WebHttpClient | None = None,
         max_results: int = 5,
         min_similarity: float = 60,
         timeout_seconds: float = 30,
     ) -> None:
         normalized_key = api_key.strip()
-        if not normalized_key:
+        if mode not in {"api", "anonymous"}:
+            raise ValueError("unsupported SauceNAO mode")
+        if mode == "api" and not normalized_key:
             raise ValueError("SauceNAO API key is required")
+        if mode == "anonymous" and web_http is None:
+            raise ValueError("anonymous SauceNAO requires a web HTTP client")
         if max_results <= 0:
             raise ValueError("max_results must be greater than zero")
         if not 0 <= min_similarity <= 100:
@@ -41,6 +49,8 @@ class SauceNaoProvider:
 
         self._http = http
         self._api_key = normalized_key
+        self._mode = mode
+        self._web_http = web_http
         self._max_results = max_results
         self._min_similarity = min_similarity
         self._timeout_seconds = timeout_seconds
@@ -54,6 +64,13 @@ class SauceNaoProvider:
         image_url = (image.url or "").strip()
         if urlsplit(image_url).scheme.lower() not in {"http", "https"}:
             raise ProviderError("SauceNAO requires a public HTTP image URL")
+
+        if self._mode == "anonymous":
+            raw_results, malformed = await self._search_anonymous(image_url)
+            outcome = self._select_results(raw_results)
+            if malformed:
+                outcome.notices.append("SauceNAO 部分网页结果无法解析，已保留可用结果。")
+            return outcome
 
         params = {
             "api_key": self._api_key,
@@ -98,7 +115,37 @@ class SauceNaoProvider:
         raw_results = response.data.get("results")
         if not isinstance(raw_results, list):
             return ProviderOutcome()
+        return self._select_results(raw_results)
 
+    async def _search_anonymous(self, image_url: str) -> tuple[list[dict], bool]:
+        try:
+            response = await self._web_http.post_form(
+                self._ENDPOINT,
+                data={"url": image_url, "db": "999", "output_type": "0",
+                      "numres": str(self._max_results)},
+                headers={"Origin": "https://saucenao.com",
+                         "Referer": "https://saucenao.com/"},
+                cookies={},
+                timeout_seconds=self._timeout_seconds,
+            )
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            raise ProviderError("SauceNAO request timed out") from exc
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError("SauceNAO request failed") from exc
+        if response.status == 429:
+            raise ProviderError("SauceNAO rate limit was exceeded")
+        if response.status in {401, 403}:
+            raise ProviderError("SauceNAO anonymous access was blocked")
+        if response.status != 200:
+            raise ProviderError(f"SauceNAO returned HTTP {response.status}")
+        location = urlsplit(response.url)
+        if location.scheme != "https" or location.hostname not in {"saucenao.com", "www.saucenao.com"}:
+            raise ProviderError("SauceNAO returned an unrecognized page")
+        return parse_anonymous_results(response.text)
+
+    def _select_results(self, raw_results: list) -> ProviderOutcome:
         candidates = []
         for item in raw_results:
             parsed = self._parse_match(item)

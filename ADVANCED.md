@@ -27,6 +27,8 @@ docker exec astrbot python -m pip install -r /AstrBot/data/plugins/astrbot_plugi
 
 SauceNAO 展示一条候选，相似度接近时偏向 Pixiv 和较早作品。Ascii2d 的颜色与特征检索各取首条有效结果。Google Lens 保留自身排序，可调整最大结果数。
 
+SauceNAO 的“搜索模式”默认是 API，需要填写 Key；选择“匿名网页”后无需 Key，已填写的 Key 不会发送。两种模式沿用相同的相似度筛选和候选选择规则，不自动互相切换。匿名模式可能遇到限流、验证或网页结构变化，无法保证比 API 更稳定；访问受限时会提示失败。模式切换后需要加载或重载插件。
+
 | Google Lens 搜索类型 | 用途 |
 | --- | --- |
 | `all` | 综合搜索中的图片匹配结果 |

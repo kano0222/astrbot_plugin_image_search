@@ -133,11 +133,16 @@ class ImageSearchPlugin(Star):
 
         sauce = _section(providers, "saucenao")
         sauce_key = str(sauce.get("api_key") or "").strip()
-        if _as_bool(sauce.get("enabled"), True) and sauce_key:
+        sauce_mode = str(sauce.get("mode") or "api").strip().lower()
+        if sauce_mode not in {"api", "anonymous"}:
+            logger.warning("[ImageSearch] SauceNAO 搜索模式无效，该服务未启用")
+        elif _as_bool(sauce.get("enabled"), True) and (sauce_key or sauce_mode == "anonymous"):
             source_providers.append(
                 SauceNaoProvider(
                     self._http,
                     api_key=sauce_key,
+                    mode=sauce_mode,
+                    web_http=self._web_http,
                     max_results=_positive_int(sauce.get("max_results"), 5),
                     min_similarity=_percentage_value(sauce.get("min_similarity"), 60),
                     timeout_seconds=self._timeout_seconds,
